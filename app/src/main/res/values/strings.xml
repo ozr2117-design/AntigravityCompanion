@@ -1,4 +1,4 @@
-﻿<resources>
+<resources>
     <string name="app_name">Antigravity 伴侣</string>
     <string name="keep_alive_title">Antigravity 移动伴侣运行中</string>
     <string name="keep_alive_desc">正在后台保活连接，息屏不掉线</string>

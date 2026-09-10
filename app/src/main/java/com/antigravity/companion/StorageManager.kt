@@ -1,4 +1,4 @@
-﻿package com.antigravity.companion
+package com.antigravity.companion
 
 import android.content.Context
 import android.content.SharedPreferences

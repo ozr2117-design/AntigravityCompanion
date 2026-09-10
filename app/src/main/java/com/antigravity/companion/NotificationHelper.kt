@@ -1,4 +1,4 @@
-﻿package com.antigravity.companion
+package com.antigravity.companion
 
 import android.app.NotificationChannel
 import android.app.NotificationManager

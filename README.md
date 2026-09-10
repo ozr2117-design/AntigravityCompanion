@@ -1,4 +1,4 @@
-﻿# Antigravity 专属移动伴侣 (Android 原生保活客户端)
+# Antigravity 专属移动伴侣 (Android 原生保活客户端)
 
 专为与电脑端 **Antigravity** 协同打造的超轻量（~4MB）Android 原生客户端。
 
