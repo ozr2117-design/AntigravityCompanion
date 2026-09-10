@@ -1,4 +1,4 @@
-﻿name: Build Antigravity Companion APK
+name: Build Antigravity Companion APK
 
 on:
   push:
@@ -29,10 +29,10 @@ jobs:
 
       - name: Build Debug APK
         run: |
-          if [ ! -f "gradlew" ]; then
+          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
             gradle wrapper
-            chmod +x gradlew
           fi
+          chmod +x gradlew
           ./gradlew assembleDebug --stacktrace
 
       - name: Rename & Prepare APK
