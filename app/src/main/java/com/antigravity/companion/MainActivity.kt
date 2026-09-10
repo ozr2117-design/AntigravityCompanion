@@ -3,11 +3,17 @@ package com.antigravity.companion
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
+import android.view.MotionEvent
 import android.view.View
 import android.webkit.*
 import android.widget.Toast
@@ -19,12 +25,20 @@ import com.antigravity.companion.databinding.ActivityMainBinding
 import com.antigravity.companion.databinding.DialogSetupBinding
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlin.math.sqrt
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var storage: StorageManager
     private lateinit var notificationHelper: NotificationHelper
+
+    // 传感器与手势：摇一摇 / 双指长按 唤出配置
+    private var sensorManager: SensorManager? = null
+    private var accelerometer: Sensor? = null
+    private var lastShakeTime: Long = 0L
+    private var hasShownConnectToast: Boolean = false
+    private var twoFingerDownTime: Long = 0L
 
     // 二维码扫描 Launcher
     private val barcodeLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -49,6 +63,9 @@ class MainActivity : AppCompatActivity() {
 
         storage = StorageManager(this)
         notificationHelper = NotificationHelper(this)
+
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+        accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
         checkPermissions()
         initViews()
@@ -135,7 +152,14 @@ class MainActivity : AppCompatActivity() {
                 super.onPageFinished(view, url)
                 binding.progressBar.visibility = View.GONE
                 binding.swipeRefresh.isRefreshing = false
+
+                // 页面正常加载完成，确保设置按钮完全隐藏，决不遮挡发送按钮！
                 showEmptyState(false)
+
+                if (!hasShownConnectToast) {
+                    hasShownConnectToast = true
+                    Toast.makeText(this@MainActivity, "已连接！如需重新配置，摇一摇手机即可", Toast.LENGTH_SHORT).show()
+                }
 
                 // 记录最后访问的 URL，方便断线或重进时直达该页面
                 if (!url.isNullOrBlank() && !url.contains("about:blank")) {
@@ -155,7 +179,9 @@ class MainActivity : AppCompatActivity() {
                 if (request?.isForMainFrame == true) {
                     binding.progressBar.visibility = View.GONE
                     binding.swipeRefresh.isRefreshing = false
-                    Toast.makeText(this@MainActivity, "连接电脑失败，请检查网络或电脑是否开机", Toast.LENGTH_SHORT).show()
+                    // 网络不可达或电脑未开启时，切回配置界面，方便用户重新扫码或修改 IP
+                    showEmptyState(true)
+                    Toast.makeText(this@MainActivity, "连接电脑失败，请检查网络或重新配置地址", Toast.LENGTH_SHORT).show()
                 }
             }
 
@@ -266,15 +292,69 @@ class MainActivity : AppCompatActivity() {
     private fun showEmptyState(show: Boolean) {
         binding.emptyStateLayout.visibility = if (show) View.VISIBLE else View.GONE
         binding.swipeRefresh.visibility = if (show) View.GONE else View.VISIBLE
+        // 关键改动：已连接状态下绝对隐藏浮动按钮，不挡任何网页输入与发送按钮
+        binding.fabSettings.visibility = if (show) View.VISIBLE else View.GONE
     }
 
     override fun onResume() {
         super.onResume()
+        accelerometer?.let {
+            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        }
         // 切回前台时，主动通知 WebView 唤醒
         binding.webView.evaluateJavascript(
             "if (document.hidden !== undefined) { document.dispatchEvent(new Event('visibilitychange')); }",
             null
         )
+    }
+
+    override fun onPause() {
+        super.onPause()
+        sensorManager?.unregisterListener(this)
+    }
+
+    // 摇一摇手机唤出配置
+    override fun onSensorChanged(event: SensorEvent?) {
+        if (event?.sensor?.type == Sensor.TYPE_ACCELEROMETER) {
+            val x = event.values[0]
+            val y = event.values[1]
+            val z = event.values[2]
+            val gForce = sqrt((x * x + y * y + z * z).toDouble()) / SensorManager.GRAVITY_EARTH
+            if (gForce > 2.6) {
+                val now = System.currentTimeMillis()
+                if (now - lastShakeTime > 2000) {
+                    lastShakeTime = now
+                    showSetupDialog()
+                }
+            }
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+
+    // 双指长按屏幕 1.2 秒唤出设置
+    override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
+        if (ev != null) {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (ev.pointerCount == 2) {
+                        twoFingerDownTime = System.currentTimeMillis()
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (ev.pointerCount == 2 && twoFingerDownTime > 0) {
+                        if (System.currentTimeMillis() - twoFingerDownTime > 1200) {
+                            twoFingerDownTime = 0
+                            showSetupDialog()
+                        }
+                    }
+                }
+                MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    twoFingerDownTime = 0
+                }
+            }
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     // 原生与 JS 互通桥梁
