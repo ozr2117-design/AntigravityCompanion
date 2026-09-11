@@ -63,4 +63,12 @@
             android:text="💾 保存并连接" />
     </LinearLayout>
 
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnDialogReload"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="🔄 重新加载当前页面" />
+
 </LinearLayout>

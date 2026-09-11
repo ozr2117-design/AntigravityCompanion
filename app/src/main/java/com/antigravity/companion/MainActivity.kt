@@ -103,11 +103,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun initViews() {
-        // 下拉刷新
-        binding.swipeRefresh.setOnRefreshListener {
-            binding.webView.reload()
-        }
-
         // 初始页面的扫码和手动配置按钮
         binding.btnScanSetup.setOnClickListener {
             startScan()
@@ -136,8 +131,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             allowFileAccess = true
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode = WebSettings.LOAD_DEFAULT
-            userAgentString = settings.userAgentString + " AntigravityCompanion/1.0"
+            userAgentString = settings.userAgentString + " AntigravityCompanion/1.2"
         }
+
+        // 启用网页内原生平滑滚动与惯性滑动
+        webView.isVerticalScrollBarEnabled = true
+        webView.isHorizontalScrollBarEnabled = false
+        webView.overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
 
         // 注入原生 JS 接口桥梁
         webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
@@ -151,14 +151,13 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 binding.progressBar.visibility = View.GONE
-                binding.swipeRefresh.isRefreshing = false
 
                 // 页面正常加载完成，确保设置按钮完全隐藏，决不遮挡发送按钮！
                 showEmptyState(false)
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！如需重新配置，摇一摇手机即可", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！如需重新配置或刷新，摇一摇手机即可", Toast.LENGTH_SHORT).show()
                 }
 
                 // 记录最后访问的 URL，方便断线或重进时直达该页面
@@ -178,7 +177,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 super.onReceivedError(view, request, error)
                 if (request?.isForMainFrame == true) {
                     binding.progressBar.visibility = View.GONE
-                    binding.swipeRefresh.isRefreshing = false
                     // 网络不可达或电脑未开启时，切回配置界面，方便用户重新扫码或修改 IP
                     showEmptyState(true)
                     Toast.makeText(this@MainActivity, "连接电脑失败，请检查网络或重新配置地址", Toast.LENGTH_SHORT).show()
@@ -272,6 +270,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
         }
 
+        dialogBinding.btnDialogReload.setOnClickListener {
+            dialog.dismiss()
+            binding.webView.reload()
+            Toast.makeText(this, "正在刷新当前页面...", Toast.LENGTH_SHORT).show()
+        }
+
         dialog.show()
     }
 
@@ -291,7 +295,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private fun showEmptyState(show: Boolean) {
         binding.emptyStateLayout.visibility = if (show) View.VISIBLE else View.GONE
-        binding.swipeRefresh.visibility = if (show) View.GONE else View.VISIBLE
+        binding.webView.visibility = if (show) View.GONE else View.VISIBLE
         // 关键改动：已连接状态下绝对隐藏浮动按钮，不挡任何网页输入与发送按钮
         binding.fabSettings.visibility = if (show) View.VISIBLE else View.GONE
     }
