@@ -3,13 +3,10 @@ package com.antigravity.companion
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AlertDialog
-import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
+import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
@@ -25,20 +22,38 @@ import com.antigravity.companion.databinding.ActivityMainBinding
 import com.antigravity.companion.databinding.DialogSetupBinding
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
-import kotlin.math.sqrt
 
-class MainActivity : AppCompatActivity(), SensorEventListener {
+class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var storage: StorageManager
     private lateinit var notificationHelper: NotificationHelper
 
-    // 传感器与手势：摇一摇 / 双指长按 唤出配置
-    private var sensorManager: SensorManager? = null
-    private var accelerometer: Sensor? = null
-    private var lastShakeTime: Long = 0L
+    // 文件与媒体上传回调
+    private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
+
+    // 网页中点击 "+" 选择图片/文件 Launcher
+    private val filePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val uris = mutableListOf<Uri>()
+        if (result.resultCode == RESULT_OK) {
+            val data = result.data
+            data?.data?.let { uris.add(it) }
+            data?.clipData?.let { clipData ->
+                for (i in 0 until clipData.itemCount) {
+                    uris.add(clipData.getItemAt(i).uri)
+                }
+            }
+        }
+        fileUploadCallback?.onReceiveValue(if (uris.isNotEmpty()) uris.distinct().toTypedArray() else null)
+        fileUploadCallback = null
+    }
+
+    // 三指向上滑动唤出设置
+    private var threeFingerStartY = 0f
+    private var isThreeFingerSwipeActive = false
     private var hasShownConnectToast: Boolean = false
-    private var twoFingerDownTime: Long = 0L
 
     // 二维码扫描 Launcher
     private val barcodeLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -63,9 +78,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         storage = StorageManager(this)
         notificationHelper = NotificationHelper(this)
-
-        sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
-        accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
         checkPermissions()
         initViews()
@@ -157,7 +169,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！如需重新配置或刷新，摇一摇手机即可", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！如需重新配置或刷新，三指向上滑动即可", Toast.LENGTH_SHORT).show()
                 }
 
                 // 记录最后访问的 URL，方便断线或重进时直达该页面
@@ -200,6 +212,44 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 if (newProgress >= 100) {
                     binding.progressBar.visibility = View.GONE
                 }
+            }
+
+            // 处理网页中点击 "+" 选择图片/附件/媒体文件
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?
+            ): Boolean {
+                fileUploadCallback?.onReceiveValue(null)
+                fileUploadCallback = filePathCallback
+
+                val intent = try {
+                    fileChooserParams?.createIntent()?.apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                    } ?: Intent(Intent.ACTION_GET_CONTENT).apply {
+                        type = "*/*"
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                    }
+                } catch (e: Exception) {
+                    Intent(Intent.ACTION_GET_CONTENT).apply {
+                        type = "*/*"
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                    }
+                }
+
+                if (fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE) {
+                    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                }
+
+                try {
+                    filePickerLauncher.launch(intent)
+                } catch (e: Exception) {
+                    fileUploadCallback?.onReceiveValue(null)
+                    fileUploadCallback = null
+                    Toast.makeText(this@MainActivity, "无法打开系统文件选择器", Toast.LENGTH_SHORT).show()
+                    return false
+                }
+                return true
             }
         }
     }
@@ -302,9 +352,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-        accelerometer?.let {
-            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
-        }
         // 切回前台时，主动通知 WebView 唤醒
         binding.webView.evaluateJavascript(
             "if (document.hidden !== undefined) { document.dispatchEvent(new Event('visibilitychange')); }",
@@ -312,50 +359,31 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         )
     }
 
-    override fun onPause() {
-        super.onPause()
-        sensorManager?.unregisterListener(this)
-    }
-
-    // 摇一摇手机唤出配置
-    override fun onSensorChanged(event: SensorEvent?) {
-        if (event?.sensor?.type == Sensor.TYPE_ACCELEROMETER) {
-            val x = event.values[0]
-            val y = event.values[1]
-            val z = event.values[2]
-            val gForce = sqrt((x * x + y * y + z * z).toDouble()) / SensorManager.GRAVITY_EARTH
-            if (gForce > 2.6) {
-                val now = System.currentTimeMillis()
-                if (now - lastShakeTime > 2000) {
-                    lastShakeTime = now
-                    showSetupDialog()
-                }
-            }
-        }
-    }
-
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-
-    // 双指长按屏幕 1.2 秒唤出设置
+    // 三指向上滑动唤出配置弹窗
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
         if (ev != null) {
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_POINTER_DOWN -> {
-                    if (ev.pointerCount == 2) {
-                        twoFingerDownTime = System.currentTimeMillis()
+            if (ev.pointerCount == 3) {
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_POINTER_DOWN -> {
+                        threeFingerStartY = (ev.getY(0) + ev.getY(1) + ev.getY(2)) / 3f
+                        isThreeFingerSwipeActive = true
                     }
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (ev.pointerCount == 2 && twoFingerDownTime > 0) {
-                        if (System.currentTimeMillis() - twoFingerDownTime > 1200) {
-                            twoFingerDownTime = 0
-                            showSetupDialog()
+                    MotionEvent.ACTION_MOVE -> {
+                        if (isThreeFingerSwipeActive && threeFingerStartY > 0f) {
+                            val currentY = (ev.getY(0) + ev.getY(1) + ev.getY(2)) / 3f
+                            val deltaY = threeFingerStartY - currentY
+                            // 向上滑动距离超过 180 像素，触发配置弹窗
+                            if (deltaY > 180f) {
+                                isThreeFingerSwipeActive = false
+                                threeFingerStartY = 0f
+                                showSetupDialog()
+                            }
                         }
                     }
                 }
-                MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    twoFingerDownTime = 0
-                }
+            } else {
+                isThreeFingerSwipeActive = false
+                threeFingerStartY = 0f
             }
         }
         return super.dispatchTouchEvent(ev)
