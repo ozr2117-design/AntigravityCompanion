@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
@@ -18,6 +19,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import com.antigravity.companion.databinding.ActivityMainBinding
 import com.antigravity.companion.databinding.DialogSetupBinding
 import com.journeyapps.barcodescanner.ScanContract
@@ -79,6 +81,7 @@ class MainActivity : AppCompatActivity() {
         storage = StorageManager(this)
         notificationHelper = NotificationHelper(this)
 
+        updateSystemBars()
         checkPermissions()
         initViews()
         initWebView()
@@ -102,6 +105,25 @@ class MainActivity : AppCompatActivity() {
         } else {
             showEmptyState(true)
         }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        updateSystemBars()
+    }
+
+    private fun updateSystemBars(customBgColor: Int? = null, customIsDark: Boolean? = null) {
+        val isNightMode = customIsDark ?: ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES)
+        val statusBarBg = customBgColor ?: ContextCompat.getColor(this, R.color.status_bar_color)
+        val navBarBg = ContextCompat.getColor(this, R.color.surface)
+
+        window.statusBarColor = statusBarBg
+        window.navigationBarColor = navBarBg
+
+        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+        // 深色模式下图标变白(false)，亮色模式下图标变黑(true)
+        insetsController.isAppearanceLightStatusBars = !isNightMode
+        insetsController.isAppearanceLightNavigationBars = !isNightMode
     }
 
     private fun checkPermissions() {
@@ -257,17 +279,152 @@ class MainActivity : AppCompatActivity() {
     private fun injectKeepAliveAndNotificationScript(view: WebView?) {
         val js = """
             (function() {
-                // 防止重复注入
                 if (window.__antigravity_companion_injected) return;
                 window.__antigravity_companion_injected = true;
 
-                // 监听切回前台事件，触发页面网络静默唤醒
+                // 1. 同步暗黑/白天模式状态栏颜色
+                function detectAndSyncTheme() {
+                    try {
+                        var isDark = false;
+                        var bgColor = '';
+                        var metaTheme = document.querySelector('meta[name="theme-color"]');
+                        if (metaTheme && metaTheme.content) {
+                            bgColor = metaTheme.content;
+                        }
+                        var html = document.documentElement;
+                        var body = document.body;
+                        if (html && (html.classList.contains('dark') || html.getAttribute('data-theme') === 'dark')) {
+                            isDark = true;
+                        } else if (body && (body.classList.contains('dark') || body.getAttribute('data-theme') === 'dark')) {
+                            isDark = true;
+                        } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                            isDark = true;
+                        } else if (body) {
+                            var cs = window.getComputedStyle(body);
+                            var bg = cs.backgroundColor;
+                            var match = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+                            if (match) {
+                                var r = parseInt(match[1]);
+                                var g = parseInt(match[2]);
+                                var b = parseInt(match[3]);
+                                var luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+                                isDark = luminance < 128;
+                            }
+                        }
+                        if (window.AndroidBridge && window.AndroidBridge.syncTheme) {
+                            window.AndroidBridge.syncTheme(isDark, bgColor);
+                        }
+                    } catch (e) {}
+                }
+
+                // 2. 断线重连看门狗：监测 "Lost connection to the remote instance" 提示
+                function findDisconnectBanner() {
+                    var keywords = [
+                        "Lost connection to the remote instance",
+                        "Lost connection",
+                        "refresh the page"
+                    ];
+                    var walker = document.createTreeWalker(
+                        document.body || document.documentElement,
+                        NodeFilter.SHOW_TEXT,
+                        null,
+                        false
+                    );
+                    var node;
+                    while (node = walker.nextNode()) {
+                        var val = node.nodeValue;
+                        if (!val) continue;
+                        for (var i = 0; i < keywords.length; i++) {
+                            if (val.indexOf(keywords[i]) !== -1) {
+                                var el = node.parentElement;
+                                while (el && el !== document.body && el.offsetHeight < 220) {
+                                    if (el.tagName === 'DIV' || el.tagName === 'SECTION' || el.getAttribute('role') === 'alert') {
+                                        return el;
+                                    }
+                                    el = el.parentElement;
+                                }
+                                return node.parentElement;
+                            }
+                        }
+                    }
+                    return null;
+                }
+
+                window.__lastAutoReloadTime = 0;
+                window.__autoReloadTimer = null;
+
+                window.__checkAndHandleDisconnect = function() {
+                    var banner = findDisconnectBanner();
+                    if (banner) {
+                        // 为提示条增加点击重连机制与提示
+                        if (!banner.__ag_click_bound) {
+                            banner.__ag_click_bound = true;
+                            banner.style.cursor = 'pointer';
+                            banner.style.transition = 'all 0.2s ease';
+
+                            var tip = document.createElement('div');
+                            tip.id = '__ag_reconnect_tip';
+                            tip.style.cssText = 'font-size: 11px; color: #1a73e8; margin-top: 4px; font-weight: bold; text-align: center;';
+                            tip.textContent = '⚡ 点击立即重连 (或稍后自动恢复)';
+                            banner.appendChild(tip);
+
+                            banner.addEventListener('click', function(e) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (window.AndroidBridge && window.AndroidBridge.reloadPage) {
+                                    window.AndroidBridge.reloadPage();
+                                } else {
+                                    window.location.reload();
+                                }
+                            });
+                        }
+
+                        // 自动平滑重连逻辑：冷却 8 秒，延时 2.2 秒自动重连
+                        var now = Date.now();
+                        if (!window.__lastAutoReloadTime || (now - window.__lastAutoReloadTime > 8000)) {
+                            if (!window.__autoReloadTimer) {
+                                window.__autoReloadTimer = setTimeout(function() {
+                                    window.__autoReloadTimer = null;
+                                    window.__lastAutoReloadTime = Date.now();
+                                    if (window.AndroidBridge && window.AndroidBridge.reloadPage) {
+                                        window.AndroidBridge.reloadPage();
+                                    } else {
+                                        window.location.reload();
+                                    }
+                                }, 2200);
+                            }
+                        }
+                    } else {
+                        if (window.__autoReloadTimer) {
+                            clearTimeout(window.__autoReloadTimer);
+                            window.__autoReloadTimer = null;
+                        }
+                    }
+                };
+
+                setInterval(function() {
+                    window.__checkAndHandleDisconnect();
+                    detectAndSyncTheme();
+                }, 1500);
+
+                var observer = new MutationObserver(function() {
+                    window.__checkAndHandleDisconnect();
+                });
+                if (document.body) {
+                    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+                }
+
                 document.addEventListener('visibilitychange', function() {
                     if (document.visibilityState === 'visible') {
-                        // 触发页面可能存在的重连事件
                         window.dispatchEvent(new Event('online'));
+                        setTimeout(function() {
+                            window.__checkAndHandleDisconnect();
+                            detectAndSyncTheme();
+                        }, 300);
                     }
                 });
+
+                setTimeout(detectAndSyncTheme, 300);
             })();
         """.trimIndent()
         view?.evaluateJavascript(js, null)
@@ -352,11 +509,29 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // 切回前台时，主动通知 WebView 唤醒
+        binding.webView.onResume()
+        binding.webView.setNetworkAvailable(true)
+        updateSystemBars()
+        // 切回前台时，主动通知 WebView 唤醒并执行重连/刷新检查
         binding.webView.evaluateJavascript(
-            "if (document.hidden !== undefined) { document.dispatchEvent(new Event('visibilitychange')); }",
+            """
+            (function() {
+                if (document.hidden !== undefined) {
+                    document.dispatchEvent(new Event('visibilitychange'));
+                }
+                window.dispatchEvent(new Event('online'));
+                if (typeof window.__checkAndHandleDisconnect === 'function') {
+                    window.__checkAndHandleDisconnect();
+                }
+            })();
+            """.trimIndent(),
             null
         )
+    }
+
+    override fun onPause() {
+        super.onPause()
+        binding.webView.onPause()
     }
 
     // 三指向上滑动唤出配置弹窗
@@ -399,6 +574,29 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun saveLastConversation(url: String) {
             storage.lastPageUrl = url
+        }
+
+        @JavascriptInterface
+        fun reloadPage() {
+            runOnUiThread {
+                binding.progressBar.visibility = View.VISIBLE
+                binding.webView.reload()
+                Toast.makeText(this@MainActivity, "正在重新连接 Antigravity...", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        @JavascriptInterface
+        fun syncTheme(isDark: Boolean, hexColor: String) {
+            runOnUiThread {
+                try {
+                    val color = if (hexColor.isNotBlank() && hexColor.startsWith("#")) {
+                        android.graphics.Color.parseColor(hexColor)
+                    } else null
+                    updateSystemBars(color, isDark)
+                } catch (_: Exception) {
+                    updateSystemBars(null, isDark)
+                }
+            }
         }
     }
 }

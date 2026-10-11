@@ -7,4 +7,5 @@
     <color name="surface">#FFFFFF</color>
     <color name="text_primary">#202124</color>
     <color name="text_secondary">#5F6368</color>
+    <color name="status_bar_color">#FFFFFF</color>
 </resources>
