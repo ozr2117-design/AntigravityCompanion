@@ -112,16 +112,16 @@ class MainActivity : AppCompatActivity() {
         updateSystemBars()
     }
 
-    private fun updateSystemBars(customBgColor: Int? = null, customIsDark: Boolean? = null) {
-        val isNightMode = customIsDark ?: ((resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES)
-        val statusBarBg = customBgColor ?: ContextCompat.getColor(this, R.color.status_bar_color)
+    private fun updateSystemBars() {
+        val isNightMode = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val statusBarBg = ContextCompat.getColor(this, R.color.status_bar_color)
         val navBarBg = ContextCompat.getColor(this, R.color.surface)
 
         window.statusBarColor = statusBarBg
         window.navigationBarColor = navBarBg
 
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
-        // 深色模式下图标变白(false)，亮色模式下图标变黑(true)
+        // 浅色模式（白天模式）：文字图标变深黑(true)；深色模式（夜间模式）：文字图标变白色(false)
         insetsController.isAppearanceLightStatusBars = !isNightMode
         insetsController.isAppearanceLightNavigationBars = !isNightMode
     }
@@ -282,42 +282,7 @@ class MainActivity : AppCompatActivity() {
                 if (window.__antigravity_companion_injected) return;
                 window.__antigravity_companion_injected = true;
 
-                // 1. 同步暗黑/白天模式状态栏颜色
-                function detectAndSyncTheme() {
-                    try {
-                        var isDark = false;
-                        var bgColor = '';
-                        var metaTheme = document.querySelector('meta[name="theme-color"]');
-                        if (metaTheme && metaTheme.content) {
-                            bgColor = metaTheme.content;
-                        }
-                        var html = document.documentElement;
-                        var body = document.body;
-                        if (html && (html.classList.contains('dark') || html.getAttribute('data-theme') === 'dark')) {
-                            isDark = true;
-                        } else if (body && (body.classList.contains('dark') || body.getAttribute('data-theme') === 'dark')) {
-                            isDark = true;
-                        } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-                            isDark = true;
-                        } else if (body) {
-                            var cs = window.getComputedStyle(body);
-                            var bg = cs.backgroundColor;
-                            var match = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-                            if (match) {
-                                var r = parseInt(match[1]);
-                                var g = parseInt(match[2]);
-                                var b = parseInt(match[3]);
-                                var luminance = 0.299 * r + 0.587 * g + 0.114 * b;
-                                isDark = luminance < 128;
-                            }
-                        }
-                        if (window.AndroidBridge && window.AndroidBridge.syncTheme) {
-                            window.AndroidBridge.syncTheme(isDark, bgColor);
-                        }
-                    } catch (e) {}
-                }
-
-                // 2. 断线重连看门狗：监测 "Lost connection to the remote instance" 提示
+                // 断线重连看门狗：监测 "Lost connection to the remote instance" 提示
                 function findDisconnectBanner() {
                     var keywords = [
                         "Lost connection to the remote instance",
@@ -404,7 +369,6 @@ class MainActivity : AppCompatActivity() {
 
                 setInterval(function() {
                     window.__checkAndHandleDisconnect();
-                    detectAndSyncTheme();
                 }, 1500);
 
                 var observer = new MutationObserver(function() {
@@ -419,12 +383,9 @@ class MainActivity : AppCompatActivity() {
                         window.dispatchEvent(new Event('online'));
                         setTimeout(function() {
                             window.__checkAndHandleDisconnect();
-                            detectAndSyncTheme();
                         }, 300);
                     }
                 });
-
-                setTimeout(detectAndSyncTheme, 300);
             })();
         """.trimIndent()
         view?.evaluateJavascript(js, null)
@@ -585,20 +546,6 @@ class MainActivity : AppCompatActivity() {
                 binding.progressBar.visibility = View.VISIBLE
                 binding.webView.reload()
                 Toast.makeText(this@MainActivity, "正在重新连接 Antigravity...", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        @JavascriptInterface
-        fun syncTheme(isDark: Boolean, hexColor: String) {
-            runOnUiThread {
-                try {
-                    val color = if (hexColor.isNotBlank() && hexColor.startsWith("#")) {
-                        android.graphics.Color.parseColor(hexColor)
-                    } else null
-                    updateSystemBars(color, isDark)
-                } catch (_: Exception) {
-                    updateSystemBars(null, isDark)
-                }
             }
         }
     }
