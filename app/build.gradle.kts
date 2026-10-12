@@ -11,19 +11,32 @@ android {
         applicationId = "com.antigravity.companion"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "1.3.1"
+        versionCode = 6
+        versionName = "1.3.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file("keystore/release.keystore")
+            storePassword = "antigravity123"
+            keyAlias = "antigravity"
+            keyPassword = "antigravity123"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {

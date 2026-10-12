@@ -52,9 +52,9 @@ class MainActivity : AppCompatActivity() {
         fileUploadCallback = null
     }
 
-    // 三指向上滑动唤出设置
-    private var threeFingerStartY = 0f
-    private var isThreeFingerSwipeActive = false
+    // 两指向下滑动唤出设置（避开系统三指截屏冲突）
+    private var twoFingerStartY = 0f
+    private var isTwoFingerSwipeActive = false
     private var hasShownConnectToast: Boolean = false
 
     // 二维码扫描 Launcher
@@ -191,7 +191,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！如需重新配置或刷新，三指向上滑动即可", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！如需重新配置或刷新，两指向下滑动即可", Toast.LENGTH_SHORT).show()
                 }
 
                 // 记录最后访问的 URL，方便断线或重进时直达该页面
@@ -534,31 +534,34 @@ class MainActivity : AppCompatActivity() {
         binding.webView.onPause()
     }
 
-    // 三指向上滑动唤出配置弹窗
+    // 两指向下滑动唤出配置弹窗（避开系统三指截屏）
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
         if (ev != null) {
-            if (ev.pointerCount == 3) {
+            if (ev.pointerCount == 2) {
                 when (ev.actionMasked) {
                     MotionEvent.ACTION_POINTER_DOWN -> {
-                        threeFingerStartY = (ev.getY(0) + ev.getY(1) + ev.getY(2)) / 3f
-                        isThreeFingerSwipeActive = true
+                        twoFingerStartY = (ev.getY(0) + ev.getY(1)) / 2f
+                        isTwoFingerSwipeActive = true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        if (isThreeFingerSwipeActive && threeFingerStartY > 0f) {
-                            val currentY = (ev.getY(0) + ev.getY(1) + ev.getY(2)) / 3f
-                            val deltaY = threeFingerStartY - currentY
-                            // 向上滑动距离超过 180 像素，触发配置弹窗
+                        if (isTwoFingerSwipeActive && twoFingerStartY > 0f) {
+                            val currentY = (ev.getY(0) + ev.getY(1)) / 2f
+                            val deltaY = currentY - twoFingerStartY
+                            // 向下滑动距离超过 180 像素，触发配置弹窗
                             if (deltaY > 180f) {
-                                isThreeFingerSwipeActive = false
-                                threeFingerStartY = 0f
+                                isTwoFingerSwipeActive = false
+                                twoFingerStartY = 0f
                                 showSetupDialog()
                             }
+                        } else if (!isTwoFingerSwipeActive) {
+                            twoFingerStartY = (ev.getY(0) + ev.getY(1)) / 2f
+                            isTwoFingerSwipeActive = true
                         }
                     }
                 }
             } else {
-                isThreeFingerSwipeActive = false
-                threeFingerStartY = 0f
+                isTwoFingerSwipeActive = false
+                twoFingerStartY = 0f
             }
         }
         return super.dispatchTouchEvent(ev)
