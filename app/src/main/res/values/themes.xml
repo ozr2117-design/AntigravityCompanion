@@ -5,5 +5,7 @@
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:navigationBarColor">@color/surface</item>
         <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="windowActionModeOverlay">true</item>
     </style>
 </resources>

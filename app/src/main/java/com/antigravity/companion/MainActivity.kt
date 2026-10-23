@@ -165,6 +165,10 @@ class MainActivity : AppCompatActivity() {
             allowFileAccess = true
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode = WebSettings.LOAD_DEFAULT
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+            textZoom = 100
             userAgentString = settings.userAgentString + " AntigravityCompanion/1.2"
         }
 
@@ -173,7 +177,9 @@ class MainActivity : AppCompatActivity() {
         webView.isHorizontalScrollBarEnabled = false
         webView.overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
 
-        // 确保启用原生文本长按选择与触感反馈
+        // 确保启用原生文本长按选择与触感反馈，获取焦点支持
+        webView.isFocusable = true
+        webView.isFocusableInTouchMode = true
         webView.isLongClickable = true
         webView.isHapticFeedbackEnabled = true
 
@@ -296,25 +302,20 @@ class MainActivity : AppCompatActivity() {
                             style.type = 'text/css';
                             style.innerHTML = 
                                 '* { -webkit-touch-callout: default !important; } ' +
-                                'html, body, #root, #app, main, article, section, p, span, code, pre, div, h1, h2, h3, h4, h5, h6, li, td, th, blockquote, label, [class*="message"], [class*="content"], [class*="markdown"], [class*="chat"], [class*="bubble"], [class*="prose"] { ' +
-                                '-webkit-user-select: text !important; user-select: text !important; } ' +
+                                'html, body, #root, #app, main, article, section, p, span, code, pre, div, h1, h2, h3, h4, h5, h6, li, td, th, blockquote, label, [class*="message"], [class*="content"], [class*="markdown"], [class*="chat"], [class*="bubble"], [class*="prose"], [class*="text"] { ' +
+                                '-webkit-user-select: text !important; user-select: text !important; touch-action: auto !important; } ' +
                                 'button, [role="button"], a[role="button"], svg, i { ' +
                                 '-webkit-user-select: none !important; user-select: none !important; }';
                             (document.head || document.documentElement).appendChild(style);
+                        }
+                        if (document.body) {
+                            if (document.body.onselectstart) document.body.onselectstart = null;
+                            if (document.body.oncontextmenu) document.body.oncontextmenu = null;
                         }
                     } catch (e) {}
                 }
 
                 enableTextSelection();
-
-                // 放行选择与上下文事件，防止网页脚本拦截原生水滴游标
-                document.addEventListener('selectstart', function(e) {
-                    e.stopPropagation();
-                }, true);
-
-                document.addEventListener('contextmenu', function(e) {
-                    e.stopPropagation();
-                }, true);
 
                 // 2. 断线重连看门狗：监测 "Lost connection to the remote instance" 提示
                 function findDisconnectBanner() {
