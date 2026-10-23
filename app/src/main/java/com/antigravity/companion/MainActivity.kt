@@ -173,6 +173,10 @@ class MainActivity : AppCompatActivity() {
         webView.isHorizontalScrollBarEnabled = false
         webView.overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
 
+        // 确保启用原生文本长按选择与触感反馈
+        webView.isLongClickable = true
+        webView.isHapticFeedbackEnabled = true
+
         // 注入原生 JS 接口桥梁
         webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
 
@@ -282,7 +286,37 @@ class MainActivity : AppCompatActivity() {
                 if (window.__antigravity_companion_injected) return;
                 window.__antigravity_companion_injected = true;
 
-                // 断线重连看门狗：监测 "Lost connection to the remote instance" 提示
+                // 1. 解锁全界面文字长按多选与自由复制
+                function enableTextSelection() {
+                    try {
+                        var styleId = '__ag_enable_selection_style';
+                        if (!document.getElementById(styleId)) {
+                            var style = document.createElement('style');
+                            style.id = styleId;
+                            style.type = 'text/css';
+                            style.innerHTML = 
+                                '* { -webkit-touch-callout: default !important; } ' +
+                                'html, body, #root, #app, main, article, section, p, span, code, pre, div, h1, h2, h3, h4, h5, h6, li, td, th, blockquote, label, [class*="message"], [class*="content"], [class*="markdown"], [class*="chat"], [class*="bubble"], [class*="prose"] { ' +
+                                '-webkit-user-select: text !important; user-select: text !important; } ' +
+                                'button, [role="button"], a[role="button"], svg, i { ' +
+                                '-webkit-user-select: none !important; user-select: none !important; }';
+                            (document.head || document.documentElement).appendChild(style);
+                        }
+                    } catch (e) {}
+                }
+
+                enableTextSelection();
+
+                // 放行选择与上下文事件，防止网页脚本拦截原生水滴游标
+                document.addEventListener('selectstart', function(e) {
+                    e.stopPropagation();
+                }, true);
+
+                document.addEventListener('contextmenu', function(e) {
+                    e.stopPropagation();
+                }, true);
+
+                // 2. 断线重连看门狗：监测 "Lost connection to the remote instance" 提示
                 function findDisconnectBanner() {
                     var keywords = [
                         "Lost connection to the remote instance",
@@ -369,10 +403,12 @@ class MainActivity : AppCompatActivity() {
 
                 setInterval(function() {
                     window.__checkAndHandleDisconnect();
+                    enableTextSelection();
                 }, 1500);
 
                 var observer = new MutationObserver(function() {
                     window.__checkAndHandleDisconnect();
+                    enableTextSelection();
                 });
                 if (document.body) {
                     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
@@ -383,6 +419,7 @@ class MainActivity : AppCompatActivity() {
                         window.dispatchEvent(new Event('online'));
                         setTimeout(function() {
                             window.__checkAndHandleDisconnect();
+                            enableTextSelection();
                         }, 300);
                     }
                 });
