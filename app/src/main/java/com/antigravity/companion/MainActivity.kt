@@ -165,23 +165,28 @@ class MainActivity : AppCompatActivity() {
             allowFileAccess = true
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode = WebSettings.LOAD_DEFAULT
-            setSupportZoom(true)
-            builtInZoomControls = true
+            layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
+            setSupportZoom(false)
+            builtInZoomControls = false
             displayZoomControls = false
             textZoom = 100
             userAgentString = settings.userAgentString + " AntigravityCompanion/1.2"
         }
 
         // 启用网页内原生平滑滚动与惯性滑动
-        webView.isVerticalScrollBarEnabled = true
-        webView.isHorizontalScrollBarEnabled = false
-        webView.overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+        webView.apply {
+            isVerticalScrollBarEnabled = true
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
 
-        // 确保启用原生文本长按选择与触感反馈，获取焦点支持
-        webView.isFocusable = true
-        webView.isFocusableInTouchMode = true
-        webView.isLongClickable = true
-        webView.isHapticFeedbackEnabled = true
+            // 确保启用原生文本长按选择与触感反馈，获取焦点支持
+            isFocusable = true
+            isFocusableInTouchMode = true
+            isLongClickable = true
+            isHapticFeedbackEnabled = true
+            isClickable = true
+            isEnabled = true
+        }
 
         // 注入原生 JS 接口桥梁
         webView.addJavascriptInterface(WebAppInterface(), "AndroidBridge")
@@ -292,25 +297,46 @@ class MainActivity : AppCompatActivity() {
                 if (window.__antigravity_companion_injected) return;
                 window.__antigravity_companion_injected = true;
 
-                // 1. 解锁全界面文字长按多选与自由复制
+                // 1. 精确解锁内联文字颗粒度选择与水滴游标逐字拖动
                 function enableTextSelection() {
                     try {
-                        var styleId = '__ag_enable_selection_style';
+                        // 移除旧版粗暴的选择样式
+                        var oldStyle = document.getElementById('__ag_enable_selection_style');
+                        if (oldStyle) oldStyle.remove();
+
+                        var styleId = '__ag_selection_fix_v2';
                         if (!document.getElementById(styleId)) {
                             var style = document.createElement('style');
                             style.id = styleId;
                             style.type = 'text/css';
                             style.innerHTML = 
-                                '* { -webkit-touch-callout: default !important; } ' +
-                                'html, body, #root, #app, main, article, section, p, span, code, pre, div, h1, h2, h3, h4, h5, h6, li, td, th, blockquote, label, [class*="message"], [class*="content"], [class*="markdown"], [class*="chat"], [class*="bubble"], [class*="prose"], [class*="text"] { ' +
-                                '-webkit-user-select: text !important; user-select: text !important; touch-action: auto !important; } ' +
-                                'button, [role="button"], a[role="button"], svg, i { ' +
-                                '-webkit-user-select: none !important; user-select: none !important; }';
+                                'html, body { -webkit-user-select: auto !important; user-select: auto !important; } ' +
+                                'p, span, em, strong, b, i, u, small, mark, abbr, cite, q, h1, h2, h3, h4, h5, h6, li, dt, dd, th, td, blockquote, code, pre, kbd, samp, var, pre code, pre span { ' +
+                                '-webkit-user-select: text !important; user-select: text !important; } ' +
+                                'button, [role="button"], a[role="button"], input, select, textarea, label[for], svg, img, video, canvas, iframe, [contenteditable="false"] { ' +
+                                '-webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none !important; } ' +
+                                '[class*="message"], [class*="content"], [class*="chat"], [class*="bubble"], [class*="markdown"], [class*="prose"] { ' +
+                                'touch-action: pan-y !important; } ' +
+                                '::selection { background: rgba(66, 133, 244, 0.3) !important; } ' +
+                                '* { -webkit-touch-callout: default !important; }';
                             (document.head || document.documentElement).appendChild(style);
                         }
+
+                        // 清除元素级别可能存在的 onselectstart 与 oncontextmenu 拦截
                         if (document.body) {
                             if (document.body.onselectstart) document.body.onselectstart = null;
                             if (document.body.oncontextmenu) document.body.oncontextmenu = null;
+                        }
+
+                        // 确保 Viewport 为 1:1 物理像素映射，彻底消除长按命中半径放大问题
+                        var viewportMeta = document.querySelector('meta[name="viewport"]');
+                        if (!viewportMeta) {
+                            viewportMeta = document.createElement('meta');
+                            viewportMeta.name = 'viewport';
+                            document.head.appendChild(viewportMeta);
+                        }
+                        if (viewportMeta && (!viewportMeta.content || !viewportMeta.content.includes('width=device-width'))) {
+                            viewportMeta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
                         }
                     } catch (e) {}
                 }
