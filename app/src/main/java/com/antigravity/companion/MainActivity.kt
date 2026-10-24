@@ -25,8 +25,6 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.antigravity.companion.databinding.ActivityMainBinding
 import com.antigravity.companion.databinding.DialogSetupBinding
-import com.antigravity.companion.databinding.DialogTextSelectBinding
-import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 
@@ -59,6 +57,7 @@ class MainActivity : AppCompatActivity() {
 
     // 两指向下滑动唤出设置（避开系统三指截屏冲突）
     private var twoFingerStartY = 0f
+    private var twoFingerStartSpan = 0f
     private var isTwoFingerSwipeActive = false
     private var hasShownConnectToast: Boolean = false
 
@@ -166,18 +165,30 @@ class MainActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
-            useWideViewPort = true
-            loadWithOverviewMode = true
             allowFileAccess = true
+            allowContentAccess = true
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode = WebSettings.LOAD_DEFAULT
-            layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
-            setSupportZoom(false)
-            builtInZoomControls = false
-            displayZoomControls = false
+
+            // 消除字体膨胀失真，与原生 Chrome 渲染一致
+            layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
             textZoom = 100
-            userAgentString = settings.userAgentString + " AntigravityCompanion/1.2"
+
+            // 视口与缩放：支持双指缩放，消除 980px 强制缩小的比例漂移
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            setSupportZoom(true)
+            builtInZoomControls = true
+            displayZoomControls = false
+
+            minimumFontSize = 1
+            minimumLogicalFontSize = 1
+
+            userAgentString = settings.userAgentString + " AntigravityCompanion/1.3"
         }
+
+        // 强制 100% 基础物理比例，消除触控消歧算法的坐标漂移
+        webView.setInitialScale(100)
 
         // 启用网页内原生平滑滚动与惯性滑动
         webView.apply {
@@ -185,13 +196,10 @@ class MainActivity : AppCompatActivity() {
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
 
-            // 确保启用原生文本长按选择与触感反馈，获取焦点支持
+            // 保持焦点支持，让 Chromium 原生引擎全权处理长按与水滴游标
             isFocusable = true
             isFocusableInTouchMode = true
-            isLongClickable = true
             isHapticFeedbackEnabled = true
-            isClickable = true
-            isEnabled = true
         }
 
         // 注入原生 JS 接口桥梁
@@ -300,14 +308,32 @@ class MainActivity : AppCompatActivity() {
 
                 // 1. 穿透样式：解锁所有内联文本、代码块，清除 Monaco 遮罩层拦截
                 function getSelectionCSS() {
-                    return 'html, body { -webkit-user-select: auto !important; user-select: auto !important; } ' +
-                        'p, span, em, strong, b, i, u, small, mark, abbr, cite, q, h1, h2, h3, h4, h5, h6, li, dt, dd, th, td, blockquote, code, pre, kbd, samp, var, pre code, pre span, .view-line, .monaco-tokenized-source, [class*="chat"], [class*="message"], [class*="content"], [class*="markdown"], [class*="prose"], [class*="bubble"], [class*="text"] { ' +
-                        '-webkit-user-select: text !important; user-select: text !important; -webkit-touch-callout: default !important; } ' +
-                        'button, [role="button"], a[role="button"], input, select, textarea, label[for], svg, img, video, canvas, [contenteditable="false"] { ' +
-                        '-webkit-user-select: none !important; user-select: none !important; } ' +
+                    return 'html, body { ' +
+                        '-webkit-text-size-adjust: 100% !important; ' +
+                        'text-size-adjust: 100% !important; ' +
+                        '-webkit-user-select: text !important; ' +
+                        'user-select: text !important; ' +
+                        '} ' +
+                        '*, *::before, *::after { ' +
+                        '-webkit-user-select: text !important; ' +
+                        'user-select: text !important; ' +
+                        '-webkit-touch-callout: default !important; ' +
+                        '} ' +
+                        'button, button *, [role="button"], [role="button"] *, a[role="button"], input, select, textarea, label[for], svg, img, video, canvas, [contenteditable="false"] { ' +
+                        '-webkit-user-select: none !important; ' +
+                        'user-select: none !important; ' +
+                        '} ' +
                         '.monaco-editor .view-overlays { pointer-events: none !important; } ' +
-                        '[class*="message"], [class*="content"], [class*="chat"], [class*="bubble"], [class*="markdown"], [class*="prose"], .monaco-scrollable-element { ' +
-                        'touch-action: pan-y !important; } ' +
+                        'table td, table th { ' +
+                        'white-space: normal !important; ' +
+                        '-webkit-user-select: text !important; ' +
+                        'user-select: text !important; ' +
+                        'line-height: 1.5 !important; ' +
+                        '} ' +
+                        'pre, code, span, p, div { ' +
+                        '-webkit-user-select: text !important; ' +
+                        'user-select: text !important; ' +
+                        '} ' +
                         '::selection { background: rgba(26, 115, 232, 0.35) !important; }';
                 }
 
@@ -332,8 +358,8 @@ class MainActivity : AppCompatActivity() {
                             viewport.name = 'viewport';
                             targetDoc.head.appendChild(viewport);
                         }
-                        if (viewport && (!viewport.content || !viewport.content.includes('width=device-width'))) {
-                            viewport.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+                        if (viewport) {
+                            viewport.content = 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes';
                         }
                     } catch (e) {}
 
@@ -346,74 +372,14 @@ class MainActivity : AppCompatActivity() {
                                 if (iframeDoc && !iframeDoc.__ag_injected) {
                                     iframeDoc.__ag_injected = true;
                                     injectStylesAndFixes(iframeDoc);
-                                    initSmartTextExtractor(iframeDoc);
                                 }
                             } catch (err) {}
                         }
                     } catch (e) {}
                 }
 
-                // 2. 长按精准锁定表格单元格或消息文本，呼起原生自由选词浮层
-                function initSmartTextExtractor(targetDoc) {
-                    if (!targetDoc || targetDoc.__ag_extractor_ready) return;
-                    targetDoc.__ag_extractor_ready = true;
-
-                    var timer = null;
-                    var startX = 0;
-                    var startY = 0;
-
-                    targetDoc.addEventListener('touchstart', function(e) {
-                        if (e.touches.length !== 1) {
-                            clearTimeout(timer);
-                            return;
-                        }
-                        var touch = e.touches[0];
-                        startX = touch.clientX;
-                        startY = touch.clientY;
-
-                        clearTimeout(timer);
-                        timer = setTimeout(function() {
-                            var el = targetDoc.elementFromPoint(startX, startY);
-                            if (!el) return;
-
-                            // 忽略按钮与输入框交互长按
-                            if (el.closest('button, [role="button"], a[role="button"], input, textarea')) return;
-
-                            // 优先精确锁定表格单元格（td, th）或特定消息块/段落/代码块
-                            var container = el.closest('td, th, pre, code, blockquote, [class*="message"], [class*="bubble"], [class*="content"], p');
-                            if (!container) container = el;
-
-                            var text = (container.innerText || container.textContent || '').trim();
-                            if (text && text.length > 0) {
-                                if (window.AndroidBridge && window.AndroidBridge.openTextExtractionSheet) {
-                                    window.AndroidBridge.openTextExtractionSheet(text);
-                                }
-                            }
-                        }, 400);
-                    }, { passive: true });
-
-                    targetDoc.addEventListener('touchmove', function(e) {
-                        if (timer) {
-                            var touch = e.touches[0];
-                            if (Math.abs(touch.clientX - startX) > 10 || Math.abs(touch.clientY - startY) > 10) {
-                                clearTimeout(timer);
-                                timer = null;
-                            }
-                        }
-                    }, { passive: true });
-
-                    targetDoc.addEventListener('touchend', function() {
-                        clearTimeout(timer);
-                    }, { passive: true });
-
-                    targetDoc.addEventListener('touchcancel', function() {
-                        clearTimeout(timer);
-                    }, { passive: true });
-                }
-
-                // 首次注入顶层文档与当前子框架
+                // 首次注入顶层文档
                 injectStylesAndFixes(document);
-                initSmartTextExtractor(document);
 
                 // 3. 断线重连看门狗：监测 "Lost connection to the remote instance" 提示
                 function findDisconnectBanner() {
@@ -628,77 +594,35 @@ class MainActivity : AppCompatActivity() {
         binding.webView.onPause()
     }
 
-    private fun showTextExtractionSheet(rawText: String) {
-        val cleanText = rawText.trim()
-        if (cleanText.isEmpty()) return
-
-        val dialog = BottomSheetDialog(this)
-        val sheetBinding = DialogTextSelectBinding.inflate(layoutInflater)
-        dialog.setContentView(sheetBinding.root)
-
-        sheetBinding.tvSelectableContent.text = cleanText
-
-        // 智能正则检测验证码或手机号/数字串（例如：验证码 423659 或独立的 4-8 位纯数字）
-        val codeRegex = Regex("""(?:验证码|code|Code)[\s:：]*([0-9a-zA-Z]{4,8})|\b(\d{4,8})\b""")
-        val match = codeRegex.find(cleanText)
-        val detectedCode = match?.groups?.get(1)?.value ?: match?.groups?.get(2)?.value
-
-        if (!detectedCode.isNullOrBlank() && detectedCode.length in 4..8) {
-            sheetBinding.btnQuickCode.visibility = View.VISIBLE
-            sheetBinding.btnQuickCode.text = "🔑 复制验证码: $detectedCode"
-            sheetBinding.btnQuickCode.setOnClickListener {
-                copyStringToClipboard(detectedCode, "验证码: $detectedCode")
-                dialog.dismiss()
-            }
-        } else {
-            sheetBinding.btnQuickCode.visibility = View.GONE
-        }
-
-        sheetBinding.btnCopyAll.setOnClickListener {
-            copyStringToClipboard(cleanText, "全部文本")
-            dialog.dismiss()
-        }
-
-        sheetBinding.btnSheetClose.setOnClickListener {
-            dialog.dismiss()
-        }
-
-        dialog.show()
-    }
-
-    private fun copyStringToClipboard(text: String, label: String = "文本") {
-        try {
-            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            val clip = ClipData.newPlainText("Copied Text", text)
-            clipboard.setPrimaryClip(clip)
-            Toast.makeText(this, "已复制 $label", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "复制失败: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    // 两指向下滑动唤出配置弹窗（避开系统三指截屏）
+    // 两指向下滑动唤出配置弹窗（避开系统三指截屏冲突，同时不干扰双指捏合缩放）
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
         if (ev != null) {
             if (ev.pointerCount == 2) {
+                val dx = ev.getX(0) - ev.getX(1)
+                val dy = ev.getY(0) - ev.getY(1)
+                val currentSpan = Math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+
                 when (ev.actionMasked) {
                     MotionEvent.ACTION_POINTER_DOWN -> {
                         twoFingerStartY = (ev.getY(0) + ev.getY(1)) / 2f
+                        twoFingerStartSpan = currentSpan
                         isTwoFingerSwipeActive = true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        if (isTwoFingerSwipeActive && twoFingerStartY > 0f) {
-                            val currentY = (ev.getY(0) + ev.getY(1)) / 2f
-                            val deltaY = currentY - twoFingerStartY
-                            // 向下滑动距离超过 180 像素，触发配置弹窗
-                            if (deltaY > 180f) {
+                        if (isTwoFingerSwipeActive) {
+                            // 如果双指间距发生明显变化（超过 40px），判定为捏合缩放手势，取消下滑判定
+                            if (Math.abs(currentSpan - twoFingerStartSpan) > 40f) {
                                 isTwoFingerSwipeActive = false
-                                twoFingerStartY = 0f
-                                showSetupDialog()
+                            } else if (twoFingerStartY > 0f) {
+                                val currentY = (ev.getY(0) + ev.getY(1)) / 2f
+                                val deltaY = currentY - twoFingerStartY
+                                // 双指向下滑动超过 200 像素，呼出设置对话框
+                                if (deltaY > 200f) {
+                                    isTwoFingerSwipeActive = false
+                                    twoFingerStartY = 0f
+                                    showSetupDialog()
+                                }
                             }
-                        } else if (!isTwoFingerSwipeActive) {
-                            twoFingerStartY = (ev.getY(0) + ev.getY(1)) / 2f
-                            isTwoFingerSwipeActive = true
                         }
                     }
                 }
@@ -723,20 +647,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
-        fun openTextExtractionSheet(text: String) {
-            runOnUiThread {
-                showTextExtractionSheet(text)
-            }
-        }
-
-        @JavascriptInterface
         fun copyToClipboard(text: String) {
             runOnUiThread {
                 try {
                     val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                     val clip = ClipData.newPlainText("Copied Text", text)
                     clipboard.setPrimaryClip(clip)
-                    Toast.makeText(this@MainActivity, "已复制 ${text.length} 个字", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已复制", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
                     Toast.makeText(this@MainActivity, "复制失败: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
