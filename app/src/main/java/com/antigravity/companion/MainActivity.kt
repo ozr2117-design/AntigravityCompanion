@@ -199,11 +199,10 @@ class MainActivity : AppCompatActivity() {
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
 
-            // 保持焦点支持，屏蔽系统粗粒度长按，全面交由高精度逐字选择器
+            // 保持焦点支持，绝不拦截 View 层长按，让原生 Chromium 引擎与水滴光标正常唤出
             isFocusable = true
             isFocusableInTouchMode = true
             isHapticFeedbackEnabled = true
-            setOnLongClickListener { true }
         }
 
         // 注入原生 JS 接口桥梁
@@ -341,358 +340,132 @@ class MainActivity : AppCompatActivity() {
                         '::selection { background: rgba(26, 115, 232, 0.35) !important; }';
                 }
 
-                // 2. 原地高精度逐字字符选择器（绕过 Chromium kWord 强制吸附，支持平滑逐字拖拽）
-                function initCharacterSelector(doc) {
-                    if (!doc || doc.__ag_char_selector_init) return;
-                    doc.__ag_char_selector_init = true;
+                // 2. 原生水滴游标逐字精度强化引擎（绝不拦截原生触摸，通过零宽词边界与选区收缩实现逐字点选）
+                function initPrecisionWordBoundaries(targetDoc) {
+                    if (!targetDoc || targetDoc.__ag_boundaries_injected) return;
+                    targetDoc.__ag_boundaries_injected = true;
 
-                    var startRange = null;
-                    var endRange = null;
-                    var isSelecting = false;
-                    var isDraggingHandle = null;
-                    var longPressTimer = null;
-                    var touchStartX = 0;
-                    var touchStartY = 0;
-                    var activeTouchId = null;
-
-                    var overlayContainer = doc.createElement('div');
-                    overlayContainer.id = '__ag_selection_overlay';
-                    overlayContainer.style.cssText = 'position: absolute; left: 0; top: 0; width: 100%; height: 0; pointer-events: none; z-index: 2147483640;';
-                    (doc.body || doc.documentElement).appendChild(overlayContainer);
-
-                    var startHandle = doc.createElement('div');
-                    startHandle.id = '__ag_handle_start';
-                    startHandle.style.cssText = 'position: absolute; width: 22px; height: 22px; background: #1a73e8; border-radius: 0 50% 50% 50%; transform: rotate(45deg); cursor: pointer; pointer-events: auto; z-index: 2147483645; display: none; box-shadow: 0 2px 6px rgba(0,0,0,0.4); touch-action: none; padding: 10px; margin: -10px; background-clip: content-box;';
-                    (doc.body || doc.documentElement).appendChild(startHandle);
-
-                    var endHandle = doc.createElement('div');
-                    endHandle.id = '__ag_handle_end';
-                    endHandle.style.cssText = 'position: absolute; width: 22px; height: 22px; background: #1a73e8; border-radius: 50% 50% 0 50%; transform: rotate(45deg); cursor: pointer; pointer-events: auto; z-index: 2147483645; display: none; box-shadow: 0 2px 6px rgba(0,0,0,0.4); touch-action: none; padding: 10px; margin: -10px; background-clip: content-box;';
-                    (doc.body || doc.documentElement).appendChild(endHandle);
-
-                    var toolbar = doc.createElement('div');
-                    toolbar.id = '__ag_selection_toolbar';
-                    toolbar.style.cssText = 'position: absolute; z-index: 2147483646; background: #282a2e; color: #ffffff; border: 1px solid #3c4043; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.45); padding: 4px 6px; display: none; pointer-events: auto; white-space: nowrap; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; font-weight: 500; -webkit-user-select: none; user-select: none;';
-                    toolbar.innerHTML = '<button id="__ag_btn_copy" style="background:transparent;border:none;color:#fff;padding:6px 14px;font-size:14px;cursor:pointer;font-weight:500;">复制</button><span style="color:#5f6368;margin:0 2px;">|</span><button id="__ag_btn_all" style="background:transparent;border:none;color:#8ab4f8;padding:6px 14px;font-size:14px;cursor:pointer;font-weight:500;">全选</button>';
-                    (doc.body || doc.documentElement).appendChild(toolbar);
-
-                    toolbar.querySelector('#__ag_btn_copy').addEventListener('click', function(e) {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        copyCurrentSelection();
-                    });
-                    toolbar.querySelector('#__ag_btn_copy').addEventListener('touchend', function(e) {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        copyCurrentSelection();
-                    });
-
-                    toolbar.querySelector('#__ag_btn_all').addEventListener('click', function(e) {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        selectAllContainer();
-                    });
-                    toolbar.querySelector('#__ag_btn_all').addEventListener('touchend', function(e) {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        selectAllContainer();
-                    });
-
-                    function getCaretAtPoint(x, y) {
-                        if (doc.caretRangeFromPoint) {
-                            return doc.caretRangeFromPoint(x, y);
-                        } else if (doc.caretPositionFromPoint) {
-                            var pos = doc.caretPositionFromPoint(x, y);
-                            if (pos) {
-                                var r = doc.createRange();
-                                r.setStart(pos.offsetNode, pos.offset);
-                                r.setEnd(pos.offsetNode, pos.offset);
-                                return r;
-                            }
-                        }
-                        return null;
-                    }
-
-                    function getCharRangeAtPoint(x, y) {
-                        var caret = getCaretAtPoint(x, y);
-                        if (!caret) return null;
-                        var node = caret.startContainer;
-                        if (node.nodeType !== Node.TEXT_NODE) {
-                            if (node.childNodes && node.childNodes.length > 0) {
-                                var idx = Math.min(caret.startOffset, node.childNodes.length - 1);
-                                var child = node.childNodes[idx];
-                                if (child && child.nodeType === Node.TEXT_NODE) {
-                                    node = child;
-                                } else if (child) {
-                                    var walker = doc.createTreeWalker(child, NodeFilter.SHOW_TEXT, null, false);
-                                    var t = walker.nextNode();
-                                    if (t) node = t;
-                                }
-                            }
-                        }
-                        if (!node || node.nodeType !== Node.TEXT_NODE) return null;
-
-                        var text = node.textContent || '';
-                        if (text.length === 0) return null;
-                        var offset = Math.min(Math.max(0, caret.startOffset), Math.max(0, text.length - 1));
-
-                        var r = doc.createRange();
-                        r.setStart(node, offset);
-                        r.setEnd(node, Math.min(offset + 1, text.length));
-                        return r;
-                    }
-
-                    function renderSelection() {
-                        if (!startRange || !endRange) {
-                            overlayContainer.innerHTML = '';
-                            startHandle.style.display = 'none';
-                            endHandle.style.display = 'none';
-                            toolbar.style.display = 'none';
-                            return;
-                        }
-
-                        var fullRange = doc.createRange();
-                        var comp = startRange.compareBoundaryPoints(Range.START_TO_START, endRange);
-                        var rStart = (comp <= 0) ? startRange : endRange;
-                        var rEnd = (comp <= 0) ? endRange : startRange;
-
-                        fullRange.setStart(rStart.startContainer, rStart.startOffset);
-                        fullRange.setEnd(rEnd.endContainer, rEnd.endOffset);
-
-                        var rects = fullRange.getClientRects();
-                        var html = '';
-                        var scrollX = window.scrollX || doc.documentElement.scrollLeft || 0;
-                        var scrollY = window.scrollY || doc.documentElement.scrollTop || 0;
-
-                        for (var i = 0; i < rects.length; i++) {
-                            var rect = rects[i];
-                            if (rect.width > 0 && rect.height > 0) {
-                                html += '<div style="position:absolute;left:' + (rect.left + scrollX) + 'px;top:' + (rect.top + scrollY) + 'px;width:' + rect.width + 'px;height:' + rect.height + 'px;background:rgba(26,115,232,0.3);pointer-events:none;border-radius:2px;"></div>';
-                            }
-                        }
-                        overlayContainer.innerHTML = html;
-
-                        var startBounding = rStart.getBoundingClientRect();
-                        var endBounding = rEnd.getBoundingClientRect();
-
-                        startHandle.style.display = 'block';
-                        startHandle.style.left = (startBounding.left + scrollX - 11) + 'px';
-                        startHandle.style.top = (startBounding.bottom + scrollY + 1) + 'px';
-
-                        endHandle.style.display = 'block';
-                        endHandle.style.left = (endBounding.right + scrollX - 11) + 'px';
-                        endHandle.style.top = (endBounding.bottom + scrollY + 1) + 'px';
-
-                        if (!isSelecting && !isDraggingHandle) {
-                            toolbar.style.display = 'block';
-                            var tbWidth = toolbar.offsetWidth || 140;
-                            var tbHeight = toolbar.offsetHeight || 38;
-                            var tbLeft = startBounding.left + scrollX + (startBounding.width / 2) - (tbWidth / 2);
-                            var tbTop = startBounding.top + scrollY - tbHeight - 12;
-
-                            if (tbLeft < 10) tbLeft = 10;
-                            if (tbTop < scrollY + 10) tbTop = endBounding.bottom + scrollY + 28;
-                            toolbar.style.left = tbLeft + 'px';
-                            toolbar.style.top = tbTop + 'px';
-                        } else {
-                            toolbar.style.display = 'none';
-                        }
-                    }
-
-                    function clearSelection() {
-                        startRange = null;
-                        endRange = null;
-                        isSelecting = false;
-                        isDraggingHandle = null;
-                        renderSelection();
-                    }
-
-                    function getSelectedText() {
-                        if (!startRange || !endRange) return '';
-                        var fullRange = doc.createRange();
-                        var comp = startRange.compareBoundaryPoints(Range.START_TO_START, endRange);
-                        var rStart = (comp <= 0) ? startRange : endRange;
-                        var rEnd = (comp <= 0) ? endRange : startRange;
-                        fullRange.setStart(rStart.startContainer, rStart.startOffset);
-                        fullRange.setEnd(rEnd.endContainer, rEnd.endOffset);
-                        return fullRange.toString();
-                    }
-
-                    function copyCurrentSelection() {
-                        var text = getSelectedText();
-                        if (text && text.length > 0) {
-                            if (window.AndroidBridge && window.AndroidBridge.copyToClipboard) {
-                                window.AndroidBridge.copyToClipboard(text);
-                            }
-                        }
-                        clearSelection();
-                    }
-
-                    function selectAllContainer() {
-                        if (!startRange) return;
-                        var container = startRange.startContainer;
-                        while (container && container.nodeType !== Node.ELEMENT_NODE) {
-                            container = container.parentNode;
-                        }
-                        var block = container.closest('td, th, pre, code, p, [class*="message"], [class*="content"]') || container;
-                        if (block) {
-                            var walker = doc.createTreeWalker(block, NodeFilter.SHOW_TEXT, null, false);
-                            var firstText = walker.nextNode();
-                            var lastText = firstText;
-                            var cur;
-                            while (cur = walker.nextNode()) {
-                                if (cur.textContent && cur.textContent.trim().length > 0) {
-                                    lastText = cur;
-                                }
-                            }
-                            if (firstText && lastText) {
-                                startRange = doc.createRange();
-                                startRange.setStart(firstText, 0);
-                                startRange.setEnd(firstText, Math.min(1, firstText.textContent.length));
-
-                                endRange = doc.createRange();
-                                endRange.setStart(lastText, Math.max(0, lastText.textContent.length - 1));
-                                endRange.setEnd(lastText, lastText.textContent.length);
-                                renderSelection();
-                            }
-                        }
-                    }
-
-                    function bindHandleEvents(handle, type) {
-                        handle.addEventListener('touchstart', function(e) {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            isDraggingHandle = type;
-                            toolbar.style.display = 'none';
-                            if (window.AndroidBridge && window.AndroidBridge.vibrate) {
-                                window.AndroidBridge.vibrate(20);
-                            }
-                        }, { passive: false });
-
-                        handle.addEventListener('touchmove', function(e) {
-                            if (!isDraggingHandle) return;
-                            e.stopPropagation();
-                            e.preventDefault();
-                            var touch = e.touches[0];
-                            var caret = getCharRangeAtPoint(touch.clientX, touch.clientY - 18);
-                            if (caret) {
-                                if (isDraggingHandle === 'start') {
-                                    startRange = caret;
-                                } else {
-                                    endRange = caret;
-                                }
-                                renderSelection();
-                            }
-                        }, { passive: false });
-
-                        handle.addEventListener('touchend', function(e) {
-                            e.stopPropagation();
-                            e.preventDefault();
-                            isDraggingHandle = null;
-                            renderSelection();
-                        }, { passive: false });
-                    }
-
-                    bindHandleEvents(startHandle, 'start');
-                    bindHandleEvents(endHandle, 'end');
-
-                    doc.addEventListener('touchstart', function(e) {
-                        if (e.touches.length !== 1) {
-                            if (longPressTimer) clearTimeout(longPressTimer);
-                            return;
-                        }
-
-                        var target = e.target;
-                        if (target === startHandle || target === endHandle || toolbar.contains(target)) {
-                            return;
-                        }
-
-                        if (startRange && !isDraggingHandle) {
-                            clearSelection();
-                        }
-
-                        if (target.closest('button, [role="button"], a[role="button"], input, textarea, select')) {
-                            return;
-                        }
-
-                        var touch = e.touches[0];
-                        touchStartX = touch.clientX;
-                        touchStartY = touch.clientY;
-                        activeTouchId = touch.identifier;
-
-                        if (longPressTimer) clearTimeout(longPressTimer);
-                        longPressTimer = setTimeout(function() {
-                            var charRange = getCharRangeAtPoint(touchStartX, touchStartY);
-                            if (charRange) {
-                                startRange = charRange.cloneRange();
-                                endRange = charRange.cloneRange();
-                                isSelecting = true;
-                                if (window.AndroidBridge && window.AndroidBridge.vibrate) {
-                                    window.AndroidBridge.vibrate(35);
-                                }
-                                renderSelection();
-                            }
-                        }, 320);
-                    }, { passive: true });
-
-                    doc.addEventListener('touchmove', function(e) {
-                        if (isSelecting) {
-                            var touch = null;
-                            for (var i = 0; i < e.touches.length; i++) {
-                                if (e.touches[i].identifier === activeTouchId) {
-                                    touch = e.touches[i];
-                                    break;
-                                }
-                            }
-                            if (!touch) touch = e.touches[0];
-
-                            var caret = getCharRangeAtPoint(touch.clientX, touch.clientY);
-                            if (caret) {
-                                endRange = caret;
-                                renderSelection();
-                            }
-                            e.preventDefault();
-                            return;
-                        }
-
-                        if (longPressTimer) {
-                            var touch = e.touches[0];
-                            var dx = touch.clientX - touchStartX;
-                            var dy = touch.clientY - touchStartY;
-                            if (Math.hypot(dx, dy) > 8) {
-                                clearTimeout(longPressTimer);
-                                longPressTimer = null;
-                            }
-                        }
-                    }, { passive: false });
-
-                    doc.addEventListener('touchend', function(e) {
-                        if (longPressTimer) {
-                            clearTimeout(longPressTimer);
-                            longPressTimer = null;
-                        }
-                        if (isSelecting) {
-                            isSelecting = false;
-                            renderSelection();
+                    // 1) 记录最近一次 touchstart 坐标（用于长按时判断精确命中点）
+                    var lastTouchX = 0;
+                    var lastTouchY = 0;
+                    targetDoc.addEventListener('touchstart', function(e) {
+                        if (e.touches && e.touches.length === 1) {
+                            lastTouchX = e.touches[0].clientX;
+                            lastTouchY = e.touches[0].clientY;
                         }
                     }, { passive: true });
 
-                    doc.addEventListener('touchcancel', function(e) {
-                        if (longPressTimer) {
-                            clearTimeout(longPressTimer);
-                            longPressTimer = null;
-                        }
-                        if (isSelecting) {
-                            isSelecting = false;
-                            renderSelection();
-                        }
-                    }, { passive: true });
+                    // 2) 选区过大自动就近收缩：当原生引擎长按判定选了整块（如整个单元格 > 15 字符）时，自动收缩到手指触摸处的 2-4 个字
+                    var lastAdjustTime = 0;
+                    targetDoc.addEventListener('selectionchange', function() {
+                        var now = Date.now();
+                        if (now - lastAdjustTime < 150) return;
 
-                    window.addEventListener('scroll', function() {
-                        if (startRange && !isSelecting && !isDraggingHandle) {
-                            renderSelection();
+                        var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
+                        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+
+                        var selectedText = sel.toString();
+                        // 如果长按初始选中了超过 18 个字符（整个单元格或一大段），立即就近收缩
+                        if (selectedText.length > 18 && lastTouchX > 0 && lastTouchY > 0) {
+                            var caret = null;
+                            if (targetDoc.caretRangeFromPoint) {
+                                caret = targetDoc.caretRangeFromPoint(lastTouchX, lastTouchY);
+                            } else if (targetDoc.caretPositionFromPoint) {
+                                var pos = targetDoc.caretPositionFromPoint(lastTouchX, lastTouchY);
+                                if (pos) {
+                                    caret = targetDoc.createRange();
+                                    caret.setStart(pos.offsetNode, pos.offset);
+                                    caret.setEnd(pos.offsetNode, pos.offset);
+                                }
+                            }
+
+                            if (caret && caret.startContainer && caret.startContainer.nodeType === Node.TEXT_NODE) {
+                                var node = caret.startContainer;
+                                var text = node.textContent || '';
+                                var offset = caret.startOffset;
+
+                                // 找到当前触摸点附近的单词或 4-6 位数字验证码
+                                var start = offset;
+                                var end = offset;
+                                while (start > 0 && (offset - start) < 3 && !/[\s,.;:!?()\[\]{}"'，。！？（）]/.test(text[start - 1])) {
+                                    start--;
+                                }
+                                while (end < text.length && (end - offset) < 3 && !/[\s,.;:!?()\[\]{}"'，。！？（）]/.test(text[end])) {
+                                    end++;
+                                }
+
+                                if (end > start) {
+                                    lastAdjustTime = now;
+                                    lastTouchX = 0;
+                                    lastTouchY = 0;
+                                    var newRange = targetDoc.createRange();
+                                    newRange.setStart(node, start);
+                                    newRange.setEnd(node, end);
+                                    sel.removeAllRanges();
+                                    sel.addRange(newRange);
+                                }
+                            }
                         }
-                    }, { passive: true });
+                    });
+
+                    // 3) 复制时自动清洗零宽字符，确保剪贴板 100% 干净
+                    targetDoc.addEventListener('copy', function(e) {
+                        var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
+                        if (!sel || sel.isCollapsed) return;
+                        var rawText = sel.toString();
+                        var cleanText = rawText.replace(/[\u200B\u200C\u200D\uFEFF]/g, '');
+                        if (e.clipboardData) {
+                            e.clipboardData.setData('text/plain', cleanText);
+                            e.preventDefault();
+                        }
+                    });
+
+                    // 4) 异步向表格单元格中注入零宽字符分词边界（使 ICU 识别单字与数字分词）
+                    function injectZeroWidthBreaks() {
+                        try {
+                            var cells = targetDoc.querySelectorAll('td, th, pre, code');
+                            for (var c = 0; c < cells.length; c++) {
+                                var cell = cells[c];
+                                if (cell.__ag_zws_done) continue;
+                                cell.__ag_zws_done = true;
+
+                                var walker = targetDoc.createTreeWalker(cell, NodeFilter.SHOW_TEXT, null, false);
+                                var textNodes = [];
+                                var n;
+                                while (n = walker.nextNode()) {
+                                    if (n.textContent && n.textContent.length > 3 && !n.textContent.includes('\u200B')) {
+                                        textNodes.push(n);
+                                    }
+                                }
+
+                                for (var i = 0; i < textNodes.length; i++) {
+                                    var tn = textNodes[i];
+                                    var str = tn.textContent;
+                                    var parts = str.split(/(?<=[\u4e00-\u9fa50-9a-zA-Z])(?=[\u4e00-\u9fa50-9a-zA-Z])/);
+                                    if (parts.length > 1) {
+                                        var frag = targetDoc.createDocumentFragment();
+                                        for (var j = 0; j < parts.length; j++) {
+                                            frag.appendChild(targetDoc.createTextNode(parts[j]));
+                                            if (j < parts.length - 1) {
+                                                frag.appendChild(targetDoc.createTextNode('\u200B'));
+                                            }
+                                        }
+                                        if (tn.parentNode) {
+                                            tn.parentNode.replaceChild(frag, tn);
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (err) {}
+                    }
+
+                    setTimeout(injectZeroWidthBreaks, 400);
+                    var observer = new MutationObserver(function() {
+                        setTimeout(injectZeroWidthBreaks, 200);
+                    });
+                    if (targetDoc.body) {
+                        observer.observe(targetDoc.body, { childList: true, subtree: true });
+                    }
                 }
 
                 function injectStylesAndFixes(targetDoc) {
@@ -721,9 +494,9 @@ class MainActivity : AppCompatActivity() {
                         }
                     } catch (e) {}
 
-                    // 初始化逐字高精度选择器
+                    // 启动逐字精度强化引擎
                     try {
-                        initCharacterSelector(targetDoc);
+                        initPrecisionWordBoundaries(targetDoc);
                     } catch (e) {}
 
                     // 递归注入并穿透所有相同源 iframe
@@ -1013,8 +786,9 @@ class MainActivity : AppCompatActivity() {
         fun copyToClipboard(text: String) {
             runOnUiThread {
                 try {
+                    val cleanText = text.replace(Regex("[\\u200B\\u200C\\u200D\\uFEFF]"), "")
                     val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    val clip = ClipData.newPlainText("Copied Text", text)
+                    val clip = ClipData.newPlainText("Copied Text", cleanText)
                     clipboard.setPrimaryClip(clip)
                     Toast.makeText(this@MainActivity, "已复制", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
