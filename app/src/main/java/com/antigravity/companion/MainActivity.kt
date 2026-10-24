@@ -103,6 +103,7 @@ class MainActivity : AppCompatActivity() {
 
         // 检查配置
         if (storage.isConfigured()) {
+            storage.lastPageUrl = ""
             loadTargetPage()
             KeepAliveService.start(this)
         } else {
@@ -210,11 +211,6 @@ class MainActivity : AppCompatActivity() {
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
                     Toast.makeText(this@MainActivity, "已连接！如需重新配置或刷新，两指向下滑动即可", Toast.LENGTH_SHORT).show()
-                }
-
-                // 记录最后访问的 URL，方便断线或重进时直达该页面
-                if (!url.isNullOrBlank() && !url.contains("about:blank")) {
-                    storage.lastPageUrl = url
                 }
 
                 // 页面加载完成后注入监听脚本：支持切回前台自动触发唤醒
@@ -785,12 +781,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun loadTargetPage() {
-        val targetUrl = if (storage.lastPageUrl.isNotBlank()) {
-            storage.lastPageUrl
-        } else {
-            storage.serverUrl
-        }
-
+        // 始终加载主页地址（图2主页面），不再停留在历史对话详情页
+        val targetUrl = storage.serverUrl
         if (targetUrl.isNotBlank()) {
             binding.webView.loadUrl(targetUrl)
         }
