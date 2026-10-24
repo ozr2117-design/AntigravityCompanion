@@ -25,6 +25,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.antigravity.companion.databinding.ActivityMainBinding
 import com.antigravity.companion.databinding.DialogSetupBinding
+import com.antigravity.companion.databinding.DialogTextSelectBinding
+import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 
@@ -344,328 +346,74 @@ class MainActivity : AppCompatActivity() {
                                 if (iframeDoc && !iframeDoc.__ag_injected) {
                                     iframeDoc.__ag_injected = true;
                                     injectStylesAndFixes(iframeDoc);
-                                    initPrecisionSelector(iframeDoc);
+                                    initSmartTextExtractor(iframeDoc);
                                 }
                             } catch (err) {}
                         }
                     } catch (e) {}
                 }
 
-                // 2. 自定义高精度水滴游标、逐字微调手柄与放大镜复制条
-                function initPrecisionSelector(targetDoc) {
-                    if (!targetDoc || targetDoc.__ag_selector_ready) return;
-                    targetDoc.__ag_selector_ready = true;
+                // 2. 长按精准锁定表格单元格或消息文本，呼起原生自由选词浮层
+                function initSmartTextExtractor(targetDoc) {
+                    if (!targetDoc || targetDoc.__ag_extractor_ready) return;
+                    targetDoc.__ag_extractor_ready = true;
 
-                    var activeRange = null;
-                    var overlay = null;
-                    var handleStart = null;
-                    var handleEnd = null;
-                    var toolbar = null;
-                    var magnifier = null;
-                    var longPressTimer = null;
-                    var touchStartX = 0;
-                    var touchStartY = 0;
-                    var isSelecting = false;
+                    var timer = null;
+                    var startX = 0;
+                    var startY = 0;
 
-                    function createOverlay() {
-                        if (overlay && overlay.parentNode) return;
-                        overlay = targetDoc.createElement('div');
-                        overlay.id = '__ag_precision_overlay';
-                        overlay.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:2147483647;pointer-events:none;display:none;';
-
-                        overlay.innerHTML = 
-                            '<div id="__ag_h_start" style="position:absolute;width:44px;height:44px;margin-left:-22px;margin-top:0px;cursor:pointer;pointer-events:auto;touch-action:none;display:flex;align-items:center;justify-content:center;z-index:2147483647;">' +
-                                '<div style="width:16px;height:16px;border-radius:50% 0 50% 50%;background:#1a73e8;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.4);transform:rotate(-45deg);"></div>' +
-                            '</div>' +
-                            '<div id="__ag_h_end" style="position:absolute;width:44px;height:44px;margin-left:-22px;margin-top:0px;cursor:pointer;pointer-events:auto;touch-action:none;display:flex;align-items:center;justify-content:center;z-index:2147483647;">' +
-                                '<div style="width:16px;height:16px;border-radius:50% 50% 50% 0;background:#1a73e8;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.4);transform:rotate(-45deg);"></div>' +
-                            '</div>' +
-                            '<div id="__ag_toolbar" style="position:absolute;background:#202124;color:#fff;padding:4px 6px;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,0.45);pointer-events:auto;z-index:2147483647;display:flex;align-items:center;gap:2px;font-size:13px;font-family:sans-serif;white-space:nowrap;user-select:none;">' +
-                                '<button id="__ag_btn_copy" style="background:transparent;border:none;color:#fff;font-size:13px;font-weight:bold;padding:6px 10px;border-radius:4px;cursor:pointer;">📋 复制</button>' +
-                                '<button id="__ag_btn_all" style="background:transparent;border:none;color:#ccc;font-size:13px;padding:6px 8px;border-radius:4px;cursor:pointer;">全选</button>' +
-                                '<button id="__ag_btn_close" style="background:transparent;border:none;color:#999;font-size:13px;padding:6px 8px;border-radius:4px;cursor:pointer;">✕</button>' +
-                            '</div>' +
-                            '<div id="__ag_mag" style="position:absolute;background:#202124;color:#fff;border:1px solid #5f6368;border-radius:8px;padding:6px 12px;font-size:15px;font-family:sans-serif;box-shadow:0 4px 16px rgba(0,0,0,0.4);pointer-events:none;white-space:nowrap;display:none;z-index:2147483647;transform:translate(-50%,-100%);margin-top:-16px;"></div>';
-
-                        (targetDoc.body || targetDoc.documentElement).appendChild(overlay);
-
-                        handleStart = overlay.querySelector('#__ag_h_start');
-                        handleEnd = overlay.querySelector('#__ag_h_end');
-                        toolbar = overlay.querySelector('#__ag_toolbar');
-                        magnifier = overlay.querySelector('#__ag_mag');
-
-                        overlay.querySelector('#__ag_btn_copy').addEventListener('click', function(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            copySelectedText();
-                        });
-
-                        overlay.querySelector('#__ag_btn_all').addEventListener('click', function(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            selectAllAround();
-                        });
-
-                        overlay.querySelector('#__ag_btn_close').addEventListener('click', function(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            dismissOverlay();
-                        });
-
-                        bindHandleDrag(handleStart, 'start');
-                        bindHandleDrag(handleEnd, 'end');
-                    }
-
-                    function getCaretAtPoint(x, y) {
-                        if (targetDoc.caretRangeFromPoint) {
-                            var r = targetDoc.caretRangeFromPoint(x, y);
-                            if (r) return { node: r.startContainer, offset: r.startOffset };
-                        } else if (targetDoc.caretPositionFromPoint) {
-                            var p = targetDoc.caretPositionFromPoint(x, y);
-                            if (p) return { node: p.offsetNode, offset: p.offset };
-                        }
-                        return null;
-                    }
-
-                    function getInitialWordRange(node, offset) {
-                        if (!node) return null;
-                        if (node.nodeType !== Node.TEXT_NODE) {
-                            if (node.firstChild && node.firstChild.nodeType === Node.TEXT_NODE) {
-                                node = node.firstChild;
-                                offset = 0;
-                            } else {
-                                return null;
-                            }
-                        }
-                        var text = node.textContent || '';
-                        if (text.length === 0) return null;
-
-                        var start = Math.max(0, Math.min(offset, text.length - 1));
-                        var end = start;
-
-                        var isCJK = function(c) { return /[\u4e00-\u9fa5\u3040-\u30ff]/.test(c); };
-                        var isWord = function(c) { return /[\w-]/.test(c); };
-
-                        var ch = text.charAt(start);
-                        if (isCJK(ch)) {
-                            end = Math.min(text.length, start + 1);
-                        } else if (isWord(ch)) {
-                            while (start > 0 && isWord(text.charAt(start - 1))) start--;
-                            while (end < text.length && isWord(text.charAt(end))) end++;
-                        } else {
-                            end = Math.min(text.length, start + 1);
-                        }
-
-                        var range = targetDoc.createRange();
-                        range.setStart(node, start);
-                        range.setEnd(node, Math.max(end, start + 1));
-                        return range;
-                    }
-
-                    function updateOverlayUI() {
-                        if (!activeRange || !overlay) return;
-                        var rects = activeRange.getClientRects();
-                        if (!rects || rects.length === 0) {
-                            var single = activeRange.getBoundingClientRect();
-                            if (!single || (single.width === 0 && single.height === 0)) return;
-                            rects = [single];
-                        }
-
-                        var first = rects[0];
-                        var last = rects[rects.length - 1];
-
-                        handleStart.style.left = first.left + 'px';
-                        handleStart.style.top = first.bottom + 'px';
-
-                        handleEnd.style.left = last.right + 'px';
-                        handleEnd.style.top = last.bottom + 'px';
-
-                        var bound = activeRange.getBoundingClientRect();
-                        var top = bound.top - 46;
-                        if (top < 10) top = bound.bottom + 10;
-                        var left = bound.left + (bound.width / 2);
-                        var maxW = window.innerWidth || targetDoc.documentElement.clientWidth || 360;
-                        if (left < 75) left = 75;
-                        if (left > maxW - 75) left = maxW - 75;
-
-                        toolbar.style.left = left + 'px';
-                        toolbar.style.top = top + 'px';
-                        toolbar.style.transform = 'translateX(-50%)';
-
-                        overlay.style.display = 'block';
-                    }
-
-                    function syncToNativeSelection() {
-                        if (!activeRange) return;
-                        try {
-                            var sel = targetDoc.getSelection();
-                            sel.removeAllRanges();
-                            sel.addRange(activeRange);
-                        } catch (e) {}
-                    }
-
-                    function copySelectedText() {
-                        if (!activeRange) return;
-                        var text = activeRange.toString();
-                        if (text && text.length > 0) {
-                            if (window.AndroidBridge && window.AndroidBridge.copyToClipboard) {
-                                window.AndroidBridge.copyToClipboard(text);
-                            } else if (navigator.clipboard && navigator.clipboard.writeText) {
-                                navigator.clipboard.writeText(text);
-                            }
-                        }
-                        dismissOverlay();
-                    }
-
-                    function selectAllAround() {
-                        if (!activeRange) return;
-                        var container = activeRange.commonAncestorContainer;
-                        while (container && container !== targetDoc.body && container.offsetHeight < 400) {
-                            var tag = container.tagName;
-                            if (tag === 'P' || tag === 'PRE' || tag === 'CODE' || (container.className && typeof container.className === 'string' && container.className.indexOf('message') !== -1)) {
-                                break;
-                            }
-                            container = container.parentElement;
-                        }
-                        if (!container) container = targetDoc.body;
-                        activeRange.selectNodeContents(container);
-                        syncToNativeSelection();
-                        updateOverlayUI();
-                    }
-
-                    function dismissOverlay() {
-                        if (overlay) overlay.style.display = 'none';
-                        if (magnifier) magnifier.style.display = 'none';
-                        isSelecting = false;
-                        activeRange = null;
-                    }
-
-                    function showMagnifierBubble(x, y, node, offset) {
-                        if (!magnifier || !node || node.nodeType !== Node.TEXT_NODE) return;
-                        var txt = node.textContent || '';
-                        var start = Math.max(0, offset - 6);
-                        var end = Math.min(txt.length, offset + 6);
-                        var before = txt.substring(start, offset);
-                        var targetChar = txt.charAt(offset) || ' ';
-                        var after = txt.substring(offset + 1, end);
-
-                        magnifier.innerHTML = 
-                            '<span style="color:#aaa;">' + escapeText(before) + '</span>' +
-                            '<span style="background:#1a73e8;color:#fff;padding:1px 4px;border-radius:3px;font-weight:bold;margin:0 1px;">' + escapeText(targetChar) + '</span>' +
-                            '<span style="color:#aaa;">' + escapeText(after) + '</span>';
-                        magnifier.style.left = x + 'px';
-                        magnifier.style.top = (y - 30) + 'px';
-                        magnifier.style.display = 'block';
-                    }
-
-                    function escapeText(s) {
-                        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    }
-
-                    function bindHandleDrag(handleEl, type) {
-                        var dragging = false;
-
-                        handleEl.addEventListener('touchstart', function(e) {
-                            dragging = true;
-                            e.preventDefault();
-                            e.stopPropagation();
-                        }, { passive: false });
-
-                        handleEl.addEventListener('touchmove', function(e) {
-                            if (!dragging || !activeRange) return;
-                            e.preventDefault();
-                            e.stopPropagation();
-
-                            var t = e.touches[0];
-                            var caret = getCaretAtPoint(t.clientX, t.clientY);
-                            if (caret && caret.node) {
-                                try {
-                                    if (type === 'start') {
-                                        activeRange.setStart(caret.node, caret.offset);
-                                    } else {
-                                        activeRange.setEnd(caret.node, caret.offset);
-                                    }
-                                    syncToNativeSelection();
-                                    updateOverlayUI();
-                                    showMagnifierBubble(t.clientX, t.clientY, caret.node, caret.offset);
-                                } catch (err) {}
-                            }
-                        }, { passive: false });
-
-                        var endDrag = function(e) {
-                            if (dragging) {
-                                dragging = false;
-                                if (magnifier) magnifier.style.display = 'none';
-                                e.preventDefault();
-                                e.stopPropagation();
-                            }
-                        };
-                        handleEl.addEventListener('touchend', endDrag);
-                        handleEl.addEventListener('touchcancel', endDrag);
-                    }
-
-                    // 监听长按触发
                     targetDoc.addEventListener('touchstart', function(e) {
                         if (e.touches.length !== 1) {
-                            clearTimeout(longPressTimer);
+                            clearTimeout(timer);
                             return;
                         }
-                        var t = e.touches[0];
-                        touchStartX = t.clientX;
-                        touchStartY = t.clientY;
+                        var touch = e.touches[0];
+                        startX = touch.clientX;
+                        startY = touch.clientY;
 
-                        // 如果点击的不是手柄或工具栏，且已经开启了选择，点击外部取消
-                        if (isSelecting && overlay && overlay.style.display !== 'none') {
-                            var el = targetDoc.elementFromPoint(t.clientX, t.clientY);
-                            if (el && !el.closest('#__ag_precision_overlay')) {
-                                dismissOverlay();
-                            }
-                        }
+                        clearTimeout(timer);
+                        timer = setTimeout(function() {
+                            var el = targetDoc.elementFromPoint(startX, startY);
+                            if (!el) return;
 
-                        clearTimeout(longPressTimer);
-                        longPressTimer = setTimeout(function() {
-                            var caret = getCaretAtPoint(touchStartX, touchStartY);
-                            if (caret && caret.node) {
-                                var range = getInitialWordRange(caret.node, caret.offset);
-                                if (range) {
-                                    createOverlay();
-                                    activeRange = range;
-                                    isSelecting = true;
-                                    syncToNativeSelection();
-                                    updateOverlayUI();
+                            // 忽略按钮与输入框交互长按
+                            if (el.closest('button, [role="button"], a[role="button"], input, textarea')) return;
+
+                            // 优先精确锁定表格单元格（td, th）或特定消息块/段落/代码块
+                            var container = el.closest('td, th, pre, code, blockquote, [class*="message"], [class*="bubble"], [class*="content"], p');
+                            if (!container) container = el;
+
+                            var text = (container.innerText || container.textContent || '').trim();
+                            if (text && text.length > 0) {
+                                if (window.AndroidBridge && window.AndroidBridge.openTextExtractionSheet) {
+                                    window.AndroidBridge.openTextExtractionSheet(text);
                                 }
                             }
-                        }, 380);
+                        }, 400);
                     }, { passive: true });
 
                     targetDoc.addEventListener('touchmove', function(e) {
-                        if (longPressTimer) {
-                            var t = e.touches[0];
-                            if (Math.abs(t.clientX - touchStartX) > 8 || Math.abs(t.clientY - touchStartY) > 8) {
-                                clearTimeout(longPressTimer);
-                                longPressTimer = null;
+                        if (timer) {
+                            var touch = e.touches[0];
+                            if (Math.abs(touch.clientX - startX) > 10 || Math.abs(touch.clientY - startY) > 10) {
+                                clearTimeout(timer);
+                                timer = null;
                             }
                         }
                     }, { passive: true });
 
                     targetDoc.addEventListener('touchend', function() {
-                        clearTimeout(longPressTimer);
+                        clearTimeout(timer);
                     }, { passive: true });
 
                     targetDoc.addEventListener('touchcancel', function() {
-                        clearTimeout(longPressTimer);
-                    }, { passive: true });
-
-                    window.addEventListener('scroll', function() {
-                        if (isSelecting && activeRange) {
-                            updateOverlayUI();
-                        }
+                        clearTimeout(timer);
                     }, { passive: true });
                 }
 
                 // 首次注入顶层文档与当前子框架
                 injectStylesAndFixes(document);
-                initPrecisionSelector(document);
+                initSmartTextExtractor(document);
 
                 // 3. 断线重连看门狗：监测 "Lost connection to the remote instance" 提示
                 function findDisconnectBanner() {
@@ -753,13 +501,13 @@ class MainActivity : AppCompatActivity() {
                 setInterval(function() {
                     window.__checkAndHandleDisconnect();
                     injectStylesAndFixes(document);
-                    initPrecisionSelector(document);
+                    initSmartTextExtractor(document);
                 }, 1500);
 
                 var observer = new MutationObserver(function() {
                     window.__checkAndHandleDisconnect();
                     injectStylesAndFixes(document);
-                    initPrecisionSelector(document);
+                    initSmartTextExtractor(document);
                 });
                 if (document.body) {
                     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
@@ -771,7 +519,7 @@ class MainActivity : AppCompatActivity() {
                         setTimeout(function() {
                             window.__checkAndHandleDisconnect();
                             injectStylesAndFixes(document);
-                            initPrecisionSelector(document);
+                            initSmartTextExtractor(document);
                         }, 300);
                     }
                 });
@@ -880,6 +628,55 @@ class MainActivity : AppCompatActivity() {
         binding.webView.onPause()
     }
 
+    private fun showTextExtractionSheet(rawText: String) {
+        val cleanText = rawText.trim()
+        if (cleanText.isEmpty()) return
+
+        val dialog = BottomSheetDialog(this)
+        val sheetBinding = DialogTextSelectBinding.inflate(layoutInflater)
+        dialog.setContentView(sheetBinding.root)
+
+        sheetBinding.tvSelectableContent.text = cleanText
+
+        // 智能正则检测验证码或手机号/数字串（例如：验证码 423659 或独立的 4-8 位纯数字）
+        val codeRegex = Regex("""(?:验证码|code|Code)[\s:：]*([0-9a-zA-Z]{4,8})|\b(\d{4,8})\b""")
+        val match = codeRegex.find(cleanText)
+        val detectedCode = match?.groups?.get(1)?.value ?: match?.groups?.get(2)?.value
+
+        if (!detectedCode.isNullOrBlank() && detectedCode.length in 4..8) {
+            sheetBinding.btnQuickCode.visibility = View.VISIBLE
+            sheetBinding.btnQuickCode.text = "🔑 复制验证码: $detectedCode"
+            sheetBinding.btnQuickCode.setOnClickListener {
+                copyStringToClipboard(detectedCode, "验证码: $detectedCode")
+                dialog.dismiss()
+            }
+        } else {
+            sheetBinding.btnQuickCode.visibility = View.GONE
+        }
+
+        sheetBinding.btnCopyAll.setOnClickListener {
+            copyStringToClipboard(cleanText, "全部文本")
+            dialog.dismiss()
+        }
+
+        sheetBinding.btnSheetClose.setOnClickListener {
+            dialog.dismiss()
+        }
+
+        dialog.show()
+    }
+
+    private fun copyStringToClipboard(text: String, label: String = "文本") {
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = ClipData.newPlainText("Copied Text", text)
+            clipboard.setPrimaryClip(clip)
+            Toast.makeText(this, "已复制 $label", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "复制失败: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     // 两指向下滑动唤出配置弹窗（避开系统三指截屏）
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
         if (ev != null) {
@@ -923,6 +720,13 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun saveLastConversation(url: String) {
             storage.lastPageUrl = url
+        }
+
+        @JavascriptInterface
+        fun openTextExtractionSheet(text: String) {
+            runOnUiThread {
+                showTextExtractionSheet(text)
+            }
         }
 
         @JavascriptInterface
