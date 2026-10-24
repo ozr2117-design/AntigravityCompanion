@@ -309,7 +309,7 @@ class MainActivity : AppCompatActivity() {
                 if (window.__antigravity_companion_injected) return;
                 window.__antigravity_companion_injected = true;
 
-                // 1. 穿透样式：解锁所有内联文本、代码块，清除 Monaco 遮罩层拦截
+                // 1. 穿透样式：解锁所有内联文本、代码块，清除 Monaco 遮罩层拦截，并支持编辑态欺骗
                 function getSelectionCSS() {
                     return 'html, body { ' +
                         '-webkit-text-size-adjust: 100% !important; ' +
@@ -337,78 +337,195 @@ class MainActivity : AppCompatActivity() {
                         '-webkit-user-select: text !important; ' +
                         'user-select: text !important; ' +
                         '} ' +
+                        '.__ag_decept_editable { ' +
+                        '-webkit-user-modify: read-write-plaintext-only !important; ' +
+                        '-webkit-user-select: text !important; ' +
+                        'user-select: text !important; ' +
+                        'outline: none !important; ' +
+                        'caret-color: #1a73e8 !important; ' +
+                        '} ' +
+                        '.__ag_decept_editable * { ' +
+                        '-webkit-user-modify: inherit !important; ' +
+                        '-webkit-user-select: text !important; ' +
+                        'user-select: text !important; ' +
+                        '} ' +
                         '::selection { background: rgba(26, 115, 232, 0.35) !important; }';
                 }
 
-                // 2. 原生水滴游标逐字精度强化引擎（绝不拦截原生触摸，通过零宽词边界与选区收缩实现逐字点选）
-                function initPrecisionWordBoundaries(targetDoc) {
-                    if (!targetDoc || targetDoc.__ag_boundaries_injected) return;
-                    targetDoc.__ag_boundaries_injected = true;
+                // 2. 内核编辑态欺骗逐字精度引擎：突破 Chromium 移动端 kWord 分词与气泡拦截，实现逐字平滑点选
+                function initKernelEditableDeception(targetDoc) {
+                    if (!targetDoc || targetDoc.__ag_deception_injected) return;
+                    targetDoc.__ag_deception_injected = true;
 
-                    // 1) 记录最近一次 touchstart 坐标（用于长按时判断精确命中点）
-                    var lastTouchX = 0;
-                    var lastTouchY = 0;
+                    var activeDeceptEl = null;
+                    var touchStartX = 0;
+                    var touchStartY = 0;
+                    var cleanupTimer = null;
+
+                    function mountEditableDeception(el) {
+                        if (!el || el === targetDoc.body || el === targetDoc.documentElement) return;
+                        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'BUTTON' || el.tagName === 'A') return;
+                        if (el.isContentEditable && !el.classList.contains('__ag_decept_editable')) return;
+
+                        if (activeDeceptEl && activeDeceptEl !== el) {
+                            unmountEditableDeception(activeDeceptEl);
+                        }
+
+                        if (!el.classList.contains('__ag_decept_editable')) {
+                            el.__ag_orig_contenteditable = el.getAttribute('contenteditable');
+                            el.__ag_orig_inputmode = el.getAttribute('inputmode');
+                            el.__ag_orig_spellcheck = el.getAttribute('spellcheck');
+
+                            el.setAttribute('contenteditable', 'plaintext-only');
+                            el.setAttribute('inputmode', 'none');
+                            el.setAttribute('spellcheck', 'false');
+                            el.classList.add('__ag_decept_editable');
+                            activeDeceptEl = el;
+
+                            if (window.AndroidBridge && window.AndroidBridge.hideKeyboard) {
+                                window.AndroidBridge.hideKeyboard();
+                            }
+                        }
+                    }
+
+                    function unmountEditableDeception(el) {
+                        if (!el) return;
+                        try {
+                            if (el.classList && el.classList.contains('__ag_decept_editable')) {
+                                if (el.__ag_orig_contenteditable !== null && el.__ag_orig_contenteditable !== undefined) {
+                                    el.setAttribute('contenteditable', el.__ag_orig_contenteditable);
+                                } else {
+                                    el.removeAttribute('contenteditable');
+                                }
+
+                                if (el.__ag_orig_inputmode !== null && el.__ag_orig_inputmode !== undefined) {
+                                    el.setAttribute('inputmode', el.__ag_orig_inputmode);
+                                } else {
+                                    el.removeAttribute('inputmode');
+                                }
+
+                                if (el.__ag_orig_spellcheck !== null && el.__ag_orig_spellcheck !== undefined) {
+                                    el.setAttribute('spellcheck', el.__ag_orig_spellcheck);
+                                } else {
+                                    el.removeAttribute('spellcheck');
+                                }
+
+                                el.classList.remove('__ag_decept_editable');
+                                delete el.__ag_orig_contenteditable;
+                                delete el.__ag_orig_inputmode;
+                                delete el.__ag_orig_spellcheck;
+                            }
+                        } catch (e) {}
+                        if (activeDeceptEl === el) {
+                            activeDeceptEl = null;
+                        }
+                    }
+
+                    // 1) 触摸开始：单指触摸文本区域时，瞬间激活编辑态欺骗，迫使 Chromium 切换到 kCharacter 逐字粒度
                     targetDoc.addEventListener('touchstart', function(e) {
                         if (e.touches && e.touches.length === 1) {
-                            lastTouchX = e.touches[0].clientX;
-                            lastTouchY = e.touches[0].clientY;
+                            if (cleanupTimer) {
+                                clearTimeout(cleanupTimer);
+                                cleanupTimer = null;
+                            }
+                            var touch = e.touches[0];
+                            touchStartX = touch.clientX;
+                            touchStartY = touch.clientY;
+
+                            var target = e.target;
+                            if (!target) return;
+
+                            // 过滤交互控件与编辑器核心区
+                            if (target.closest('button, [role="button"], input, textarea, select, a[href], .monaco-editor, .view-lines, [role="tab"], [role="menuitem"]')) {
+                                return;
+                            }
+
+                            // 寻找最近的文本容器（p, td, th, code, pre, span, div, li 等）
+                            var candidate = target.closest('p, td, th, pre, code, blockquote, li, span, label, h1, h2, h3, h4, h5, h6') || (target !== targetDoc.body ? target : null);
+                            if (candidate) {
+                                mountEditableDeception(candidate);
+                            }
                         }
                     }, { passive: true });
 
-                    // 2) 选区过大自动就近收缩：当原生引擎长按判定选了整块（如整个单元格 > 15 字符）时，自动收缩到手指触摸处的 2-4 个字
-                    var lastAdjustTime = 0;
-                    targetDoc.addEventListener('selectionchange', function() {
-                        var now = Date.now();
-                        if (now - lastAdjustTime < 150) return;
-
-                        var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
-                        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
-
-                        var selectedText = sel.toString();
-                        // 如果长按初始选中了超过 18 个字符（整个单元格或一大段），立即就近收缩
-                        if (selectedText.length > 18 && lastTouchX > 0 && lastTouchY > 0) {
-                            var caret = null;
-                            if (targetDoc.caretRangeFromPoint) {
-                                caret = targetDoc.caretRangeFromPoint(lastTouchX, lastTouchY);
-                            } else if (targetDoc.caretPositionFromPoint) {
-                                var pos = targetDoc.caretPositionFromPoint(lastTouchX, lastTouchY);
-                                if (pos) {
-                                    caret = targetDoc.createRange();
-                                    caret.setStart(pos.offsetNode, pos.offset);
-                                    caret.setEnd(pos.offsetNode, pos.offset);
+                    // 2) 滑动检测：如果手指移动超过 8px（说明用户在正常滚动网页，而非长按选取），立即还原
+                    targetDoc.addEventListener('touchmove', function(e) {
+                        if (activeDeceptEl && e.touches && e.touches.length === 1) {
+                            var dx = Math.abs(e.touches[0].clientX - touchStartX);
+                            var dy = Math.abs(e.touches[0].clientY - touchStartY);
+                            if (dx > 8 || dy > 8) {
+                                var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
+                                if (!sel || sel.isCollapsed) {
+                                    unmountEditableDeception(activeDeceptEl);
                                 }
                             }
+                        }
+                    }, { passive: true });
 
-                            if (caret && caret.startContainer && caret.startContainer.nodeType === Node.TEXT_NODE) {
-                                var node = caret.startContainer;
-                                var text = node.textContent || '';
-                                var offset = caret.startOffset;
+                    // 3) 触摸结束：若未形成选区，350ms 后静默恢复原始 DOM 属性
+                    targetDoc.addEventListener('touchend', function() {
+                        if (activeDeceptEl) {
+                            if (cleanupTimer) clearTimeout(cleanupTimer);
+                            cleanupTimer = setTimeout(function() {
+                                var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
+                                if (!sel || sel.isCollapsed) {
+                                    unmountEditableDeception(activeDeceptEl);
+                                }
+                            }, 350);
+                        }
+                    }, { passive: true });
 
-                                // 找到当前触摸点附近的单词或 4-6 位数字验证码
-                                var start = offset;
-                                var end = offset;
-                                while (start > 0 && (offset - start) < 3 && !/[\s,.;:!?()\[\]{}"'，。！？（）]/.test(text[start - 1])) {
-                                    start--;
-                                }
-                                while (end < text.length && (end - offset) < 3 && !/[\s,.;:!?()\[\]{}"'，。！？（）]/.test(text[end])) {
-                                    end++;
-                                }
-
-                                if (end > start) {
-                                    lastAdjustTime = now;
-                                    lastTouchX = 0;
-                                    lastTouchY = 0;
-                                    var newRange = targetDoc.createRange();
-                                    newRange.setStart(node, start);
-                                    newRange.setEnd(node, end);
-                                    sel.removeAllRanges();
-                                    sel.addRange(newRange);
-                                }
+                    // 4) 选区变化监听：当用户点击别处取消选择时，自动还原
+                    targetDoc.addEventListener('selectionchange', function() {
+                        var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
+                        if (!sel || sel.isCollapsed) {
+                            if (activeDeceptEl) {
+                                if (cleanupTimer) clearTimeout(cleanupTimer);
+                                cleanupTimer = setTimeout(function() {
+                                    var currentSel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
+                                    if (!currentSel || currentSel.isCollapsed) {
+                                        unmountEditableDeception(activeDeceptEl);
+                                    }
+                                }, 200);
+                            }
+                        } else {
+                            if (cleanupTimer) {
+                                clearTimeout(cleanupTimer);
+                                cleanupTimer = null;
+                            }
+                            if (window.AndroidBridge && window.AndroidBridge.hideKeyboard) {
+                                window.AndroidBridge.hideKeyboard();
                             }
                         }
                     });
 
-                    // 3) 复制时自动清洗零宽字符，确保剪贴板 100% 干净
+                    // 5) 严防死守键盘与文字篡改：拦截 beforeinput 与按键输入，确保 100% 只读安全
+                    targetDoc.addEventListener('beforeinput', function(e) {
+                        if (activeDeceptEl && (e.target === activeDeceptEl || activeDeceptEl.contains(e.target))) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                        }
+                    }, true);
+
+                    targetDoc.addEventListener('keydown', function(e) {
+                        if (activeDeceptEl && (e.target === activeDeceptEl || activeDeceptEl.contains(e.target))) {
+                            if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+                                return;
+                            }
+                            e.preventDefault();
+                            e.stopPropagation();
+                        }
+                    }, true);
+
+                    targetDoc.addEventListener('focusin', function(e) {
+                        if (e.target && ((e.target.classList && e.target.classList.contains('__ag_decept_editable')) || e.target.getAttribute('inputmode') === 'none')) {
+                            if (window.AndroidBridge && window.AndroidBridge.hideKeyboard) {
+                                window.AndroidBridge.hideKeyboard();
+                            }
+                        }
+                    }, true);
+
+                    // 6) 复制文本清洗
                     targetDoc.addEventListener('copy', function(e) {
                         var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
                         if (!sel || sel.isCollapsed) return;
@@ -419,53 +536,6 @@ class MainActivity : AppCompatActivity() {
                             e.preventDefault();
                         }
                     });
-
-                    // 4) 异步向表格单元格中注入零宽字符分词边界（使 ICU 识别单字与数字分词）
-                    function injectZeroWidthBreaks() {
-                        try {
-                            var cells = targetDoc.querySelectorAll('td, th, pre, code');
-                            for (var c = 0; c < cells.length; c++) {
-                                var cell = cells[c];
-                                if (cell.__ag_zws_done) continue;
-                                cell.__ag_zws_done = true;
-
-                                var walker = targetDoc.createTreeWalker(cell, NodeFilter.SHOW_TEXT, null, false);
-                                var textNodes = [];
-                                var n;
-                                while (n = walker.nextNode()) {
-                                    if (n.textContent && n.textContent.length > 3 && !n.textContent.includes('\u200B')) {
-                                        textNodes.push(n);
-                                    }
-                                }
-
-                                for (var i = 0; i < textNodes.length; i++) {
-                                    var tn = textNodes[i];
-                                    var str = tn.textContent;
-                                    var parts = str.split(/(?<=[\u4e00-\u9fa50-9a-zA-Z])(?=[\u4e00-\u9fa50-9a-zA-Z])/);
-                                    if (parts.length > 1) {
-                                        var frag = targetDoc.createDocumentFragment();
-                                        for (var j = 0; j < parts.length; j++) {
-                                            frag.appendChild(targetDoc.createTextNode(parts[j]));
-                                            if (j < parts.length - 1) {
-                                                frag.appendChild(targetDoc.createTextNode('\u200B'));
-                                            }
-                                        }
-                                        if (tn.parentNode) {
-                                            tn.parentNode.replaceChild(frag, tn);
-                                        }
-                                    }
-                                }
-                            }
-                        } catch (err) {}
-                    }
-
-                    setTimeout(injectZeroWidthBreaks, 400);
-                    var observer = new MutationObserver(function() {
-                        setTimeout(injectZeroWidthBreaks, 200);
-                    });
-                    if (targetDoc.body) {
-                        observer.observe(targetDoc.body, { childList: true, subtree: true });
-                    }
                 }
 
                 function injectStylesAndFixes(targetDoc) {
@@ -494,9 +564,9 @@ class MainActivity : AppCompatActivity() {
                         }
                     } catch (e) {}
 
-                    // 启动逐字精度强化引擎
+                    // 启动内核编辑态欺骗逐字精度引擎
                     try {
-                        initPrecisionWordBoundaries(targetDoc);
+                        initKernelEditableDeception(targetDoc);
                     } catch (e) {}
 
                     // 递归注入并穿透所有相同源 iframe
@@ -516,6 +586,16 @@ class MainActivity : AppCompatActivity() {
 
                 // 首次注入顶层文档
                 injectStylesAndFixes(document);
+
+                // 动态 DOM 变更观察器
+                try {
+                    var docObserver = new MutationObserver(function() {
+                        injectStylesAndFixes(document);
+                    });
+                    if (document.body) {
+                        docObserver.observe(document.body, { childList: true, subtree: true });
+                    }
+                } catch (e) {}
 
                 // 3. 断线重连看门狗：监测 "Lost connection to the remote instance" 提示
                 function findDisconnectBanner() {
@@ -814,6 +894,16 @@ class MainActivity : AppCompatActivity() {
                     vibrator.vibrate(duration)
                 }
             } catch (e: Exception) {}
+        }
+
+        @JavascriptInterface
+        fun hideKeyboard() {
+            runOnUiThread {
+                try {
+                    val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                    imm?.hideSoftInputFromWindow(binding.webView.windowToken, 0)
+                } catch (e: Exception) {}
+            }
         }
 
         @JavascriptInterface
