@@ -17,6 +17,9 @@ import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.view.ActionMode
+import android.view.Menu
+import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.View
 import android.webkit.*
@@ -63,6 +66,33 @@ class MainActivity : AppCompatActivity() {
     private var twoFingerStartSpan = 0f
     private var isTwoFingerSwipeActive = false
     private var hasShownConnectToast: Boolean = false
+
+    // 原生驱动的高精度逐字选择引擎（毫秒级精准触碰，绝不整段吸附）
+    private var longPressX = 0f
+    private var longPressY = 0f
+    private val longPressRunnable = Runnable {
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator ?: @Suppress("DEPRECATION") (getSystemService(Context.VIBRATOR_SERVICE) as Vibrator)
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(35, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(35)
+            }
+        } catch (e: Exception) {}
+
+        val density = resources.displayMetrics.density
+        val cssX = (longPressX / density).toInt()
+        val cssY = (longPressY / density).toInt()
+
+        binding.webView.evaluateJavascript("window.__startCustomSelection && window.__startCustomSelection($cssX, $cssY);", null)
+    }
 
     // 二维码扫描 Launcher
     private val barcodeLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -199,10 +229,50 @@ class MainActivity : AppCompatActivity() {
             isHorizontalScrollBarEnabled = false
             overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
 
-            // 保持焦点支持，绝不拦截 View 层长按，让原生 Chromium 引擎与水滴光标正常唤出
+            // 保持焦点支持
             isFocusable = true
             isFocusableInTouchMode = true
             isHapticFeedbackEnabled = true
+
+            // 彻底接管长按与菜单：消费 View 层长按，阻止 Chromium 原生整段选词吸附与系统 ActionMode 菜单
+            isLongClickable = true
+            setOnLongClickListener {
+                true // 消费长按事件，彻底切断 Chromium 原生整段选区
+            }
+
+            customSelectionActionModeCallback = object : ActionMode.Callback {
+                override fun onCreateActionMode(mode: ActionMode?, menu: Menu?): Boolean = false
+                override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean = false
+                override fun onActionItemClicked(mode: ActionMode?, item: MenuItem?): Boolean = false
+                override fun onDestroyActionMode(mode: ActionMode?) {}
+            }
+
+            setOnTouchListener { _, event ->
+                if (event.pointerCount > 1) {
+                    removeCallbacks(longPressRunnable)
+                    return@setOnTouchListener false
+                }
+
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        longPressX = event.x
+                        longPressY = event.y
+                        postDelayed(longPressRunnable, 350)
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = Math.abs(event.x - longPressX)
+                        val dy = Math.abs(event.y - longPressY)
+                        val touchSlop = 10 * resources.displayMetrics.density
+                        if (dx > touchSlop || dy > touchSlop) {
+                            removeCallbacks(longPressRunnable)
+                        }
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        removeCallbacks(longPressRunnable)
+                    }
+                }
+                false
+            }
         }
 
         // 注入原生 JS 接口桥梁
@@ -524,99 +594,66 @@ class MainActivity : AppCompatActivity() {
                         isSelecting = true;
                     }
 
-                    // 1) 触摸监听
+                    // 由 Native 长按触发的选区入口函数
+                    targetDoc.__ag_startCustomSelection = function(x, y) {
+                        var caret = null;
+                        if (targetDoc.caretRangeFromPoint) {
+                            caret = targetDoc.caretRangeFromPoint(x, y);
+                        }
+                        if (!caret || !caret.startContainer) return false;
+
+                        var node = caret.startContainer;
+                        var offset = caret.startOffset;
+
+                        if (node.nodeType === Node.ELEMENT_NODE) {
+                            var walker = targetDoc.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
+                            var firstText = walker.nextNode();
+                            if (firstText) {
+                                node = firstText;
+                                offset = 0;
+                            } else {
+                                return false;
+                            }
+                        }
+
+                        if (node.nodeType !== Node.TEXT_NODE) return false;
+
+                        var text = node.textContent || '';
+                        if (text.length === 0) return false;
+
+                        activeContainer = findBoundingContainer(node.parentElement || node);
+
+                        // 初始选定当前单字或临近 1-3 个字符，坚决不选一大段
+                        var start = Math.max(0, offset);
+                        var end = Math.min(text.length, offset + 1);
+
+                        while (start > 0 && (offset - start < 3) && !/[\s,.;:!?()\[\]{}"'，。！？（）\n\r、]/.test(text[start - 1])) {
+                            start--;
+                        }
+                        while (end < text.length && (end - offset < 3) && !/[\s,.;:!?()\[\]{}"'，。！？（）\n\r、]/.test(text[end])) {
+                            end++;
+                        }
+
+                        var range = targetDoc.createRange();
+                        range.setStart(node, start);
+                        range.setEnd(node, end);
+                        currentRange = range;
+
+                        renderSelection();
+                        return true;
+                    };
+
+                    // 触摸开始时，如果已处在选区态且点击空白处，关闭选区
                     targetDoc.addEventListener('touchstart', function(e) {
-                        if (e.touches.length !== 1) {
-                            if (longPressTimer) {
-                                clearTimeout(longPressTimer);
-                                longPressTimer = null;
-                            }
-                            return;
-                        }
-
-                        var touch = e.touches[0];
-                        touchStartX = touch.clientX;
-                        touchStartY = touch.clientY;
-
-                        if (activeHandle || e.target.closest('#__ag_selection_overlay') || e.target.closest('#__ag_selection_menu')) {
-                            return;
-                        }
-
                         if (isSelecting) {
-                            clearSelection();
+                            if (!e.target.closest('#__ag_selection_overlay') && !e.target.closest('#__ag_selection_menu')) {
+                                clearSelection();
+                            }
                         }
-
-                        var target = e.target;
-                        if (!target) return;
-
-                        if (target.closest('button, [role="button"], input, textarea, select, a[href], [role="tab"], [role="menuitem"]')) {
-                            return;
-                        }
-
-                        longPressTimer = setTimeout(function() {
-                            longPressTimer = null;
-                            var caret = null;
-                            if (targetDoc.caretRangeFromPoint) {
-                                caret = targetDoc.caretRangeFromPoint(touchStartX, touchStartY);
-                            }
-                            if (!caret || !caret.startContainer) return;
-
-                            var node = caret.startContainer;
-                            var offset = caret.startOffset;
-
-                            if (node.nodeType === Node.ELEMENT_NODE) {
-                                var walker = targetDoc.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
-                                var firstText = walker.nextNode();
-                                if (firstText) {
-                                    node = firstText;
-                                    offset = 0;
-                                } else {
-                                    return;
-                                }
-                            }
-
-                            if (node.nodeType !== Node.TEXT_NODE) return;
-
-                            var text = node.textContent || '';
-                            if (text.length === 0) return;
-
-                            activeContainer = findBoundingContainer(node.parentElement || node);
-
-                            // 初始选定当前单字或临近 1-3 个字符，坚决不选一大段
-                            var start = Math.max(0, offset);
-                            var end = Math.min(text.length, offset + 1);
-
-                            while (start > 0 && (offset - start < 3) && !/[\s,.;:!?()\[\]{}"'，。！？（）\n\r、]/.test(text[start - 1])) {
-                                start--;
-                            }
-                            while (end < text.length && (end - offset < 3) && !/[\s,.;:!?()\[\]{}"'，。！？（）\n\r、]/.test(text[end])) {
-                                end++;
-                            }
-
-                            var range = targetDoc.createRange();
-                            range.setStart(node, start);
-                            range.setEnd(node, end);
-                            currentRange = range;
-
-                            renderSelection();
-
-                            if (window.AndroidBridge && window.AndroidBridge.vibrate) {
-                                window.AndroidBridge.vibrate(35);
-                            }
-                        }, 340);
                     }, { passive: true });
 
-                    // 2) 滑动与平滑拖动
+                    // 2) 逐字平滑拖拽
                     targetDoc.addEventListener('touchmove', function(e) {
-                        if (longPressTimer && e.touches.length === 1) {
-                            var dx = Math.abs(e.touches[0].clientX - touchStartX);
-                            var dy = Math.abs(e.touches[0].clientY - touchStartY);
-                            if (dx > 7 || dy > 7) {
-                                clearTimeout(longPressTimer);
-                                longPressTimer = null;
-                            }
-                        }
-
                         if (isSelecting && activeHandle && e.touches.length === 1) {
                             e.preventDefault();
                             e.stopPropagation();
@@ -669,10 +706,6 @@ class MainActivity : AppCompatActivity() {
                     }, { passive: false });
 
                     targetDoc.addEventListener('touchend', function() {
-                        if (longPressTimer) {
-                            clearTimeout(longPressTimer);
-                            longPressTimer = null;
-                        }
                         if (activeHandle) {
                             activeHandle = null;
                             if (window.AndroidBridge && window.AndroidBridge.vibrate) {
@@ -742,6 +775,31 @@ class MainActivity : AppCompatActivity() {
 
                 // 首次注入顶层文档
                 injectStylesAndFixes(document);
+
+                // 全局入口转发函数：Native evaluateJavascript 统一调用此处（支持多层 iframe 穿透）
+                window.__startCustomSelection = function(x, y) {
+                    function trySelectInDoc(doc, localX, localY) {
+                        if (!doc) return false;
+                        var elAtPoint = null;
+                        try {
+                            elAtPoint = doc.elementFromPoint(localX, localY);
+                        } catch (e) {}
+                        if (elAtPoint && elAtPoint.tagName === 'IFRAME') {
+                            try {
+                                var iframeDoc = elAtPoint.contentDocument || (elAtPoint.contentWindow && elAtPoint.contentWindow.document);
+                                if (iframeDoc) {
+                                    var iframeRect = elAtPoint.getBoundingClientRect();
+                                    return trySelectInDoc(iframeDoc, localX - iframeRect.left, localY - iframeRect.top);
+                                }
+                            } catch (e) {}
+                        }
+                        if (doc.__ag_startCustomSelection) {
+                            return doc.__ag_startCustomSelection(localX, localY);
+                        }
+                        return false;
+                    }
+                    return trySelectInDoc(document, x, y);
+                };
 
                 // 动态 DOM 变更观察器
                 try {
