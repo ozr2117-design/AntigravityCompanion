@@ -38,7 +38,7 @@ jobs:
       - name: Rename & Prepare APK
         run: |
           mkdir -p release_output
-          cp app/build/outputs/apk/release/app-release.apk release_output/AntigravityCompanion_v1.3.15.apk
+          cp app/build/outputs/apk/release/app-release.apk release_output/AntigravityCompanion_v1.3.16.apk
           cp app/build/outputs/apk/release/app-release.apk release_output/Antigravity.apk
 
       - name: Upload APK Artifact
