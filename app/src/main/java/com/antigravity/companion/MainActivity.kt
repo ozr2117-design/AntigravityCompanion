@@ -309,230 +309,386 @@ class MainActivity : AppCompatActivity() {
                 if (window.__antigravity_companion_injected) return;
                 window.__antigravity_companion_injected = true;
 
-                // 1. 穿透样式：解锁所有内联文本、代码块，清除 Monaco 遮罩层拦截，并支持编辑态欺骗
+                // 1. 基础穿透与防干扰样式：彻底移除导致选区穿透的全局 user-select: text，禁用原生误吸附
                 function getSelectionCSS() {
                     return 'html, body { ' +
                         '-webkit-text-size-adjust: 100% !important; ' +
                         'text-size-adjust: 100% !important; ' +
-                        '-webkit-user-select: text !important; ' +
-                        'user-select: text !important; ' +
                         '} ' +
-                        '*, *::before, *::after { ' +
-                        '-webkit-user-select: text !important; ' +
-                        'user-select: text !important; ' +
-                        '-webkit-touch-callout: default !important; ' +
-                        '} ' +
-                        'button, button *, [role="button"], [role="button"] *, a[role="button"], input, select, textarea, label[for], svg, img, video, canvas, [contenteditable="false"] { ' +
-                        '-webkit-user-select: none !important; ' +
-                        'user-select: none !important; ' +
+                        'body, div, p, span, td, th, pre, code, li, blockquote, h1, h2, h3, h4, h5, h6 { ' +
+                        '-webkit-touch-callout: none !important; ' +
                         '} ' +
                         '.monaco-editor .view-overlays { pointer-events: none !important; } ' +
                         'table td, table th { ' +
                         'white-space: normal !important; ' +
-                        '-webkit-user-select: text !important; ' +
-                        'user-select: text !important; ' +
                         'line-height: 1.5 !important; ' +
                         '} ' +
-                        'pre, code, span, p, div { ' +
+                        'input, textarea, [contenteditable="true"] { ' +
                         '-webkit-user-select: text !important; ' +
                         'user-select: text !important; ' +
-                        '} ' +
-                        '.__ag_decept_editable { ' +
-                        '-webkit-user-modify: read-write-plaintext-only !important; ' +
-                        '-webkit-user-select: text !important; ' +
-                        'user-select: text !important; ' +
-                        'outline: none !important; ' +
-                        'caret-color: #1a73e8 !important; ' +
-                        '} ' +
-                        '.__ag_decept_editable * { ' +
-                        '-webkit-user-modify: inherit !important; ' +
-                        '-webkit-user-select: text !important; ' +
-                        'user-select: text !important; ' +
-                        '} ' +
-                        '::selection { background: rgba(26, 115, 232, 0.35) !important; }';
+                        '}';
                 }
 
-                // 2. 内核编辑态欺骗逐字精度引擎：突破 Chromium 移动端 kWord 分词与气泡拦截，实现逐字平滑点选
-                function initKernelEditableDeception(targetDoc) {
-                    if (!targetDoc || targetDoc.__ag_deception_injected) return;
-                    targetDoc.__ag_deception_injected = true;
+                // 2. 自定义高精度逐字触摸选择引擎（微信读书/Kindle 级实战架构，100% 单字单符平滑拖拽，严格气泡隔离）
+                function initCustomPrecisionSelection(targetDoc) {
+                    if (!targetDoc || targetDoc.__ag_custom_sel_injected) return;
+                    targetDoc.__ag_custom_sel_injected = true;
 
-                    var activeDeceptEl = null;
+                    var isSelecting = false;
+                    var currentRange = null;
+                    var activeContainer = null;
+                    var activeHandle = null;
+                    var longPressTimer = null;
                     var touchStartX = 0;
                     var touchStartY = 0;
-                    var cleanupTimer = null;
 
-                    function mountEditableDeception(el) {
-                        if (!el || el === targetDoc.body || el === targetDoc.documentElement) return;
-                        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'BUTTON' || el.tagName === 'A') return;
-                        if (el.isContentEditable && !el.classList.contains('__ag_decept_editable')) return;
+                    // 创建高精度覆盖层
+                    var overlay = targetDoc.createElement('div');
+                    overlay.id = '__ag_selection_overlay';
+                    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:999999;';
+                    (targetDoc.body || targetDoc.documentElement).appendChild(overlay);
 
-                        if (activeDeceptEl && activeDeceptEl !== el) {
-                            unmountEditableDeception(activeDeceptEl);
-                        }
+                    var highlightBox = targetDoc.createElement('div');
+                    highlightBox.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;';
+                    overlay.appendChild(highlightBox);
 
-                        if (!el.classList.contains('__ag_decept_editable')) {
-                            el.__ag_orig_contenteditable = el.getAttribute('contenteditable');
-                            el.__ag_orig_inputmode = el.getAttribute('inputmode');
-                            el.__ag_orig_spellcheck = el.getAttribute('spellcheck');
+                    function createHandle(type) {
+                        var h = targetDoc.createElement('div');
+                        h.dataset.type = type;
+                        h.style.cssText = 'position:fixed;width:44px;height:44px;margin-left:-22px;display:none;' +
+                            'pointer-events:auto;z-index:1000000;touch-action:none;user-select:none;';
 
-                            el.setAttribute('contenteditable', 'plaintext-only');
-                            el.setAttribute('inputmode', 'none');
-                            el.setAttribute('spellcheck', 'false');
-                            el.classList.add('__ag_decept_editable');
-                            activeDeceptEl = el;
+                        var visual = targetDoc.createElement('div');
+                        visual.style.cssText = 'position:absolute;width:18px;height:18px;background:#1a73e8;' +
+                            'box-shadow:0 2px 6px rgba(0,0,0,0.4);pointer-events:none;';
 
-                            if (window.AndroidBridge && window.AndroidBridge.hideKeyboard) {
-                                window.AndroidBridge.hideKeyboard();
-                            }
-                        }
-                    }
-
-                    function unmountEditableDeception(el) {
-                        if (!el) return;
-                        try {
-                            if (el.classList && el.classList.contains('__ag_decept_editable')) {
-                                if (el.__ag_orig_contenteditable !== null && el.__ag_orig_contenteditable !== undefined) {
-                                    el.setAttribute('contenteditable', el.__ag_orig_contenteditable);
-                                } else {
-                                    el.removeAttribute('contenteditable');
-                                }
-
-                                if (el.__ag_orig_inputmode !== null && el.__ag_orig_inputmode !== undefined) {
-                                    el.setAttribute('inputmode', el.__ag_orig_inputmode);
-                                } else {
-                                    el.removeAttribute('inputmode');
-                                }
-
-                                if (el.__ag_orig_spellcheck !== null && el.__ag_orig_spellcheck !== undefined) {
-                                    el.setAttribute('spellcheck', el.__ag_orig_spellcheck);
-                                } else {
-                                    el.removeAttribute('spellcheck');
-                                }
-
-                                el.classList.remove('__ag_decept_editable');
-                                delete el.__ag_orig_contenteditable;
-                                delete el.__ag_orig_inputmode;
-                                delete el.__ag_orig_spellcheck;
-                            }
-                        } catch (e) {}
-                        if (activeDeceptEl === el) {
-                            activeDeceptEl = null;
-                        }
-                    }
-
-                    // 1) 触摸开始：单指触摸文本区域时，瞬间激活编辑态欺骗，迫使 Chromium 切换到 kCharacter 逐字粒度
-                    targetDoc.addEventListener('touchstart', function(e) {
-                        if (e.touches && e.touches.length === 1) {
-                            if (cleanupTimer) {
-                                clearTimeout(cleanupTimer);
-                                cleanupTimer = null;
-                            }
-                            var touch = e.touches[0];
-                            touchStartX = touch.clientX;
-                            touchStartY = touch.clientY;
-
-                            var target = e.target;
-                            if (!target) return;
-
-                            // 过滤交互控件与编辑器核心区
-                            if (target.closest('button, [role="button"], input, textarea, select, a[href], .monaco-editor, .view-lines, [role="tab"], [role="menuitem"]')) {
-                                return;
-                            }
-
-                            // 寻找最近的文本容器（p, td, th, code, pre, span, div, li 等）
-                            var candidate = target.closest('p, td, th, pre, code, blockquote, li, span, label, h1, h2, h3, h4, h5, h6') || (target !== targetDoc.body ? target : null);
-                            if (candidate) {
-                                mountEditableDeception(candidate);
-                            }
-                        }
-                    }, { passive: true });
-
-                    // 2) 滑动检测：如果手指移动超过 8px（说明用户在正常滚动网页，而非长按选取），立即还原
-                    targetDoc.addEventListener('touchmove', function(e) {
-                        if (activeDeceptEl && e.touches && e.touches.length === 1) {
-                            var dx = Math.abs(e.touches[0].clientX - touchStartX);
-                            var dy = Math.abs(e.touches[0].clientY - touchStartY);
-                            if (dx > 8 || dy > 8) {
-                                var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
-                                if (!sel || sel.isCollapsed) {
-                                    unmountEditableDeception(activeDeceptEl);
-                                }
-                            }
-                        }
-                    }, { passive: true });
-
-                    // 3) 触摸结束：若未形成选区，350ms 后静默恢复原始 DOM 属性
-                    targetDoc.addEventListener('touchend', function() {
-                        if (activeDeceptEl) {
-                            if (cleanupTimer) clearTimeout(cleanupTimer);
-                            cleanupTimer = setTimeout(function() {
-                                var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
-                                if (!sel || sel.isCollapsed) {
-                                    unmountEditableDeception(activeDeceptEl);
-                                }
-                            }, 350);
-                        }
-                    }, { passive: true });
-
-                    // 4) 选区变化监听：当用户点击别处取消选择时，自动还原
-                    targetDoc.addEventListener('selectionchange', function() {
-                        var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
-                        if (!sel || sel.isCollapsed) {
-                            if (activeDeceptEl) {
-                                if (cleanupTimer) clearTimeout(cleanupTimer);
-                                cleanupTimer = setTimeout(function() {
-                                    var currentSel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
-                                    if (!currentSel || currentSel.isCollapsed) {
-                                        unmountEditableDeception(activeDeceptEl);
-                                    }
-                                }, 200);
-                            }
+                        if (type === 'start') {
+                            visual.style.cssText += 'border-radius:18px 0px 18px 18px;top:0;right:0;';
                         } else {
-                            if (cleanupTimer) {
-                                clearTimeout(cleanupTimer);
-                                cleanupTimer = null;
+                            visual.style.cssText += 'border-radius:0px 18px 18px 18px;top:0;left:0;';
+                        }
+                        h.appendChild(visual);
+
+                        h.addEventListener('touchstart', function(e) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            activeHandle = type;
+                            if (window.AndroidBridge && window.AndroidBridge.vibrate) {
+                                window.AndroidBridge.vibrate(15);
                             }
-                            if (window.AndroidBridge && window.AndroidBridge.hideKeyboard) {
-                                window.AndroidBridge.hideKeyboard();
+                        }, { passive: false });
+
+                        return h;
+                    }
+
+                    var startHandle = createHandle('start');
+                    var endHandle = createHandle('end');
+                    overlay.appendChild(startHandle);
+                    overlay.appendChild(endHandle);
+
+                    // 浮动操作栏 [ 复制 ] [ 全选此段 ]
+                    var menuBar = targetDoc.createElement('div');
+                    menuBar.id = '__ag_selection_menu';
+                    menuBar.style.cssText = 'position:fixed;display:none;background:#202124;color:#ffffff;border-radius:24px;' +
+                        'padding:6px 14px;font-size:13px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,0.35);' +
+                        'pointer-events:auto;z-index:1000000;cursor:pointer;user-select:none;-webkit-user-select:none;' +
+                        'align-items:center;gap:12px;transform:translateX(-50%);';
+
+                    var copyBtn = targetDoc.createElement('span');
+                    copyBtn.textContent = '复制';
+                    copyBtn.style.cssText = 'padding:2px 6px;cursor:pointer;';
+                    copyBtn.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (currentRange) {
+                            var text = currentRange.toString();
+                            if (window.AndroidBridge && window.AndroidBridge.copyToClipboard) {
+                                window.AndroidBridge.copyToClipboard(text);
+                            }
+                            if (window.AndroidBridge && window.AndroidBridge.vibrate) {
+                                window.AndroidBridge.vibrate(25);
+                            }
+                        }
+                        clearSelection();
+                    });
+
+                    var selectAllBtn = targetDoc.createElement('span');
+                    selectAllBtn.textContent = '全选此段';
+                    selectAllBtn.style.cssText = 'padding:2px 6px;cursor:pointer;opacity:0.85;border-left:1px solid #444;padding-left:10px;';
+                    selectAllBtn.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (activeContainer) {
+                            var r = targetDoc.createRange();
+                            r.selectNodeContents(activeContainer);
+                            currentRange = r;
+                            renderSelection();
+                            if (window.AndroidBridge && window.AndroidBridge.vibrate) {
+                                window.AndroidBridge.vibrate(20);
                             }
                         }
                     });
 
-                    // 5) 严防死守键盘与文字篡改：拦截 beforeinput 与按键输入，确保 100% 只读安全
-                    targetDoc.addEventListener('beforeinput', function(e) {
-                        if (activeDeceptEl && (e.target === activeDeceptEl || activeDeceptEl.contains(e.target))) {
+                    menuBar.appendChild(copyBtn);
+                    menuBar.appendChild(selectAllBtn);
+                    overlay.appendChild(menuBar);
+
+                    // 气泡级严格边界隔离，杜绝穿透到下一个消息气泡或输入框
+                    function findBoundingContainer(el) {
+                        var curr = el;
+                        while (curr && curr !== targetDoc.body && curr !== targetDoc.documentElement) {
+                            var tag = curr.tagName.toLowerCase();
+                            if (tag === 'td' || tag === 'th') return curr;
+                            if (curr.classList && (
+                                curr.classList.contains('interactive-item-container') ||
+                                curr.classList.contains('chat-rendered-markdown') ||
+                                curr.classList.contains('rendered-markdown') ||
+                                curr.classList.contains('chat-response-content') ||
+                                curr.classList.contains('message-content')
+                            )) {
+                                return curr;
+                            }
+                            if (curr.classList && (
+                                curr.classList.contains('interactive-session') ||
+                                curr.classList.contains('chat-input-widget') ||
+                                curr.classList.contains('monaco-list')
+                            )) {
+                                break;
+                            }
+                            curr = curr.parentElement;
+                        }
+                        return el.closest('.rendered-markdown, .interactive-item-container, article, p, td, th, pre, code, div') || el;
+                    }
+
+                    function clearSelection() {
+                        isSelecting = false;
+                        currentRange = null;
+                        activeContainer = null;
+                        activeHandle = null;
+                        highlightBox.innerHTML = '';
+                        startHandle.style.display = 'none';
+                        endHandle.style.display = 'none';
+                        menuBar.style.display = 'none';
+                    }
+
+                    function renderSelection() {
+                        if (!currentRange || currentRange.collapsed) {
+                            clearSelection();
+                            return;
+                        }
+
+                        // 清除浏览器原生选区干扰
+                        var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
+                        if (sel) {
+                            try { sel.removeAllRanges(); } catch (e) {}
+                        }
+
+                        highlightBox.innerHTML = '';
+                        var rects = currentRange.getClientRects();
+                        if (!rects || rects.length === 0) {
+                            clearSelection();
+                            return;
+                        }
+
+                        for (var i = 0; i < rects.length; i++) {
+                            var r = rects[i];
+                            if (r.width <= 0 || r.height <= 0) continue;
+                            var box = targetDoc.createElement('div');
+                            box.style.cssText = 'position:fixed;left:' + r.left + 'px;top:' + r.top + 'px;' +
+                                'width:' + r.width + 'px;height:' + r.height + 'px;' +
+                                'background:rgba(26,115,232,0.28);border-radius:2px;pointer-events:none;';
+                            highlightBox.appendChild(box);
+                        }
+
+                        var firstRect = rects[0];
+                        var lastRect = rects[rects.length - 1];
+
+                        startHandle.style.display = 'block';
+                        startHandle.style.left = firstRect.left + 'px';
+                        startHandle.style.top = firstRect.bottom + 'px';
+
+                        endHandle.style.display = 'block';
+                        endHandle.style.left = lastRect.right + 'px';
+                        endHandle.style.top = lastRect.bottom + 'px';
+
+                        menuBar.style.display = 'flex';
+                        var menuTop = firstRect.top - 46;
+                        if (menuTop < 10) {
+                            menuTop = lastRect.bottom + 18;
+                        }
+                        var menuLeft = (firstRect.left + lastRect.right) / 2;
+                        menuLeft = Math.max(70, Math.min(window.innerWidth - 70, menuLeft));
+                        menuBar.style.top = menuTop + 'px';
+                        menuBar.style.left = menuLeft + 'px';
+
+                        isSelecting = true;
+                    }
+
+                    // 1) 触摸监听
+                    targetDoc.addEventListener('touchstart', function(e) {
+                        if (e.touches.length !== 1) {
+                            if (longPressTimer) {
+                                clearTimeout(longPressTimer);
+                                longPressTimer = null;
+                            }
+                            return;
+                        }
+
+                        var touch = e.touches[0];
+                        touchStartX = touch.clientX;
+                        touchStartY = touch.clientY;
+
+                        if (activeHandle || e.target.closest('#__ag_selection_overlay') || e.target.closest('#__ag_selection_menu')) {
+                            return;
+                        }
+
+                        if (isSelecting) {
+                            clearSelection();
+                        }
+
+                        var target = e.target;
+                        if (!target) return;
+
+                        if (target.closest('button, [role="button"], input, textarea, select, a[href], [role="tab"], [role="menuitem"]')) {
+                            return;
+                        }
+
+                        longPressTimer = setTimeout(function() {
+                            longPressTimer = null;
+                            var caret = null;
+                            if (targetDoc.caretRangeFromPoint) {
+                                caret = targetDoc.caretRangeFromPoint(touchStartX, touchStartY);
+                            }
+                            if (!caret || !caret.startContainer) return;
+
+                            var node = caret.startContainer;
+                            var offset = caret.startOffset;
+
+                            if (node.nodeType === Node.ELEMENT_NODE) {
+                                var walker = targetDoc.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
+                                var firstText = walker.nextNode();
+                                if (firstText) {
+                                    node = firstText;
+                                    offset = 0;
+                                } else {
+                                    return;
+                                }
+                            }
+
+                            if (node.nodeType !== Node.TEXT_NODE) return;
+
+                            var text = node.textContent || '';
+                            if (text.length === 0) return;
+
+                            activeContainer = findBoundingContainer(node.parentElement || node);
+
+                            // 初始选定当前单字或临近 1-3 个字符，坚决不选一大段
+                            var start = Math.max(0, offset);
+                            var end = Math.min(text.length, offset + 1);
+
+                            while (start > 0 && (offset - start < 3) && !/[\s,.;:!?()\[\]{}"'，。！？（）\n\r、]/.test(text[start - 1])) {
+                                start--;
+                            }
+                            while (end < text.length && (end - offset < 3) && !/[\s,.;:!?()\[\]{}"'，。！？（）\n\r、]/.test(text[end])) {
+                                end++;
+                            }
+
+                            var range = targetDoc.createRange();
+                            range.setStart(node, start);
+                            range.setEnd(node, end);
+                            currentRange = range;
+
+                            renderSelection();
+
+                            if (window.AndroidBridge && window.AndroidBridge.vibrate) {
+                                window.AndroidBridge.vibrate(35);
+                            }
+                        }, 340);
+                    }, { passive: true });
+
+                    // 2) 滑动与平滑拖动
+                    targetDoc.addEventListener('touchmove', function(e) {
+                        if (longPressTimer && e.touches.length === 1) {
+                            var dx = Math.abs(e.touches[0].clientX - touchStartX);
+                            var dy = Math.abs(e.touches[0].clientY - touchStartY);
+                            if (dx > 7 || dy > 7) {
+                                clearTimeout(longPressTimer);
+                                longPressTimer = null;
+                            }
+                        }
+
+                        if (isSelecting && activeHandle && e.touches.length === 1) {
                             e.preventDefault();
                             e.stopPropagation();
-                        }
-                    }, true);
 
-                    targetDoc.addEventListener('keydown', function(e) {
-                        if (activeDeceptEl && (e.target === activeDeceptEl || activeDeceptEl.contains(e.target))) {
-                            if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+                            var touch = e.touches[0];
+                            var aimX = touch.clientX;
+                            var aimY = touch.clientY - 16;
+
+                            var caret = null;
+                            if (targetDoc.caretRangeFromPoint) {
+                                caret = targetDoc.caretRangeFromPoint(aimX, aimY);
+                            }
+                            if (!caret || !caret.startContainer) return;
+
+                            var targetNode = caret.startContainer;
+                            var targetOffset = caret.startOffset;
+
+                            if (activeContainer && !activeContainer.contains(targetNode)) {
                                 return;
                             }
-                            e.preventDefault();
-                            e.stopPropagation();
-                        }
-                    }, true);
 
-                    targetDoc.addEventListener('focusin', function(e) {
-                        if (e.target && ((e.target.classList && e.target.classList.contains('__ag_decept_editable')) || e.target.getAttribute('inputmode') === 'none')) {
-                            if (window.AndroidBridge && window.AndroidBridge.hideKeyboard) {
-                                window.AndroidBridge.hideKeyboard();
+                            try {
+                                var testRange = currentRange.cloneRange();
+                                if (activeHandle === 'start') {
+                                    testRange.setStart(targetNode, targetOffset);
+                                    if (testRange.compareBoundaryPoints(Range.START_TO_END, currentRange) <= 0) {
+                                        currentRange.setStart(targetNode, targetOffset);
+                                    } else {
+                                        var oldEndNode = currentRange.endContainer;
+                                        var oldEndOffset = currentRange.endOffset;
+                                        currentRange.setStart(oldEndNode, oldEndOffset);
+                                        currentRange.setEnd(targetNode, targetOffset);
+                                        activeHandle = 'end';
+                                    }
+                                } else if (activeHandle === 'end') {
+                                    testRange.setEnd(targetNode, targetOffset);
+                                    if (testRange.compareBoundaryPoints(Range.END_TO_START, currentRange) >= 0) {
+                                        currentRange.setEnd(targetNode, targetOffset);
+                                    } else {
+                                        var oldStartNode = currentRange.startContainer;
+                                        var oldStartOffset = currentRange.startOffset;
+                                        currentRange.setEnd(oldStartNode, oldStartOffset);
+                                        currentRange.setStart(targetNode, targetOffset);
+                                        activeHandle = 'start';
+                                    }
+                                }
+                                renderSelection();
+                            } catch (err) {}
+                        }
+                    }, { passive: false });
+
+                    targetDoc.addEventListener('touchend', function() {
+                        if (longPressTimer) {
+                            clearTimeout(longPressTimer);
+                            longPressTimer = null;
+                        }
+                        if (activeHandle) {
+                            activeHandle = null;
+                            if (window.AndroidBridge && window.AndroidBridge.vibrate) {
+                                window.AndroidBridge.vibrate(10);
                             }
                         }
-                    }, true);
+                    }, { passive: true });
 
-                    // 6) 复制文本清洗
-                    targetDoc.addEventListener('copy', function(e) {
-                        var sel = targetDoc.getSelection ? targetDoc.getSelection() : window.getSelection();
-                        if (!sel || sel.isCollapsed) return;
-                        var rawText = sel.toString();
-                        var cleanText = rawText.replace(/[\u200B\u200C\u200D\uFEFF]/g, '');
-                        if (e.clipboardData) {
-                            e.clipboardData.setData('text/plain', cleanText);
+                    window.addEventListener('scroll', function() {
+                        if (isSelecting && currentRange) {
+                            renderSelection();
+                        }
+                    }, { passive: true });
+
+                    targetDoc.addEventListener('contextmenu', function(e) {
+                        if (isSelecting) {
                             e.preventDefault();
                         }
                     });
@@ -564,9 +720,9 @@ class MainActivity : AppCompatActivity() {
                         }
                     } catch (e) {}
 
-                    // 启动内核编辑态欺骗逐字精度引擎
+                    // 启动高精度逐字触摸选择引擎
                     try {
-                        initKernelEditableDeception(targetDoc);
+                        initCustomPrecisionSelection(targetDoc);
                     } catch (e) {}
 
                     // 递归注入并穿透所有相同源 iframe
