@@ -234,17 +234,10 @@ class MainActivity : AppCompatActivity() {
             isFocusableInTouchMode = true
             isHapticFeedbackEnabled = true
 
-            // 彻底接管长按与菜单：消费 View 层长按，阻止 Chromium 原生整段选词吸附与系统 ActionMode 菜单
+            // 彻底接管长按：消费 View 层长按，阻止 Chromium 原生整段选词吸附
             isLongClickable = true
             setOnLongClickListener {
                 true // 消费长按事件，彻底切断 Chromium 原生整段选区
-            }
-
-            customSelectionActionModeCallback = object : ActionMode.Callback {
-                override fun onCreateActionMode(mode: ActionMode?, menu: Menu?): Boolean = false
-                override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean = false
-                override fun onActionItemClicked(mode: ActionMode?, item: MenuItem?): Boolean = false
-                override fun onDestroyActionMode(mode: ActionMode?) {}
             }
 
             setOnTouchListener { _, event ->
@@ -1023,6 +1016,14 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
         binding.webView.onPause()
     }
+
+    override fun onActionModeStarted(mode: ActionMode?) {
+        mode?.finish()
+        super.onActionModeStarted(mode)
+    }
+
+    override fun onWindowStartingActionMode(callback: ActionMode.Callback?): ActionMode? = null
+    override fun onWindowStartingActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? = null
 
     // 两指向下滑动唤出配置弹窗（避开系统三指截屏冲突，同时不干扰双指捏合缩放）
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
