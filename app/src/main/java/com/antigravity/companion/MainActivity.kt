@@ -17,6 +17,7 @@ import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -40,6 +41,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var storage: StorageManager
     private lateinit var notificationHelper: NotificationHelper
+    private lateinit var gestureDetector: GestureDetector
 
     // 文件与媒体上传回调
     private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
@@ -96,6 +98,7 @@ class MainActivity : AppCompatActivity() {
 
         updateSystemBars()
         checkPermissions()
+        initGestureDetector()
         initViews()
         initWebView()
 
@@ -212,10 +215,13 @@ class MainActivity : AppCompatActivity() {
 
             WebView.setWebContentsDebuggingEnabled(true)
 
-            // 彻底接管长按：消费 View 层长按，阻止 Chromium 原生整段选词吸附与弹出
-            isLongClickable = true
-            setOnLongClickListener {
-                true // 消费长按事件，彻底切断 Chromium 原生整段选区
+            // 由原生 GestureDetector 全权接管长按，彻底杜绝 View 层的事件冲突与 ACTION_CANCEL
+            isLongClickable = false
+            setOnLongClickListener(null)
+
+            setOnTouchListener { _, event ->
+                gestureDetector.onTouchEvent(event)
+                false // 保持 false，保证网页正常平滑滚动与点击绝不受阻
             }
         }
 
@@ -342,6 +348,43 @@ class MainActivity : AppCompatActivity() {
                         'user-select: text !important; ' +
                         '}';
                 }
+
+                // 全局坐标文本探测入口（由原生 GestureDetector 直接调用）
+                window.__extractTextAtPoint = function(x, y) {
+                    function getFromDoc(doc, localX, localY) {
+                        if (!doc) return "";
+                        var el = doc.elementFromPoint(localX, localY);
+                        if (!el) {
+                            var probes = [[0, -10], [0, 10], [-10, 0], [10, 0], [0, -20], [0, 20]];
+                            for (var p = 0; p < probes.length; p++) {
+                                var c = doc.elementFromPoint(localX + probes[p][0], localY + probes[p][1]);
+                                if (c) { el = c; break; }
+                            }
+                        }
+                        if (!el) return "";
+
+                        if (el.tagName === 'IFRAME') {
+                            try {
+                                var iframeDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
+                                if (iframeDoc) {
+                                    var r = el.getBoundingClientRect();
+                                    return getFromDoc(iframeDoc, localX - r.left, localY - r.top);
+                                }
+                            } catch (e) {}
+                        }
+
+                        if (el.closest('input, textarea, select, [contenteditable="true"], .chat-input-widget')) {
+                            return "";
+                        }
+
+                        var container = el.closest('.chat-response-content, .rendered-markdown, .message-content, [class*="message"], [class*="response"]') ||
+                                        el.closest('table, pre, code, blockquote, li, p, h1, h2, h3, h4, h5, h6') ||
+                                        el;
+
+                        return (container.innerText || container.textContent || '').trim();
+                    }
+                    return getFromDoc(document, x, y);
+                };
 
                 // 2. 原生纯文本提取器：长按消息气泡唤出 Android 原生 BottomSheet 逐字自由选词
                 function initSmartTextExtractor(targetDoc) {
@@ -694,6 +737,61 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         binding.webView.onPause()
+    }
+
+    private fun initGestureDetector() {
+        gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onLongPress(e: MotionEvent) {
+                // 1. 原生立即震动反馈（让用户立刻感知触感）
+                vibratePhone(22)
+
+                // 2. 坐标转换（物理像素 -> 视口 CSS 像素）
+                val scale = if (binding.webView.scale > 0f) binding.webView.scale else resources.displayMetrics.density
+                val cssX = (e.x / scale).toInt()
+                val cssY = (e.y / scale).toInt()
+
+                // 3. 提取命中区域文本并弹出 BottomSheet
+                binding.webView.evaluateJavascript(
+                    """
+                    (function() {
+                        if (typeof window.__extractTextAtPoint === 'function') {
+                            return window.__extractTextAtPoint($cssX, $cssY);
+                        }
+                        return "";
+                    })();
+                    """.trimIndent()
+                ) { rawResult ->
+                    val text = try {
+                        if (rawResult != null && rawResult != "null" && rawResult != """") {
+                            org.json.JSONTokener(rawResult).nextValue().toString()
+                        } else ""
+                    } catch (ex: Exception) {
+                        rawResult?.trim('"')?.replace("\\n", "\n") ?: ""
+                    }
+                    if (text.isNotBlank()) {
+                        showTextExtractionSheet(text)
+                    }
+                }
+            }
+        })
+    }
+
+    private fun vibratePhone(duration: Long) {
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator ?: @Suppress("DEPRECATION") (getSystemService(Context.VIBRATOR_SERVICE) as Vibrator)
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(duration, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(duration)
+            }
+        } catch (e: Exception) {}
     }
 
     private fun showTextExtractionSheet(rawText: String) {
