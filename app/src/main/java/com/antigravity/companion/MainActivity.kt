@@ -19,6 +19,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.*
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -714,13 +715,17 @@ class MainActivity : AppCompatActivity() {
                 val maxHeight = (resources.displayMetrics.heightPixels * 0.85).toInt()
                 sheet.layoutParams.height = maxHeight
 
-                sheet.clipChildren = false
-                sheet.clipToPadding = false
+                (sheet as? ViewGroup)?.apply {
+                    clipChildren = false
+                    clipToPadding = false
+                }
             }
 
             dialog.window?.let { win ->
-                win.decorView.clipChildren = false
-                win.decorView.clipToPadding = false
+                (win.decorView as? ViewGroup)?.apply {
+                    clipChildren = false
+                    clipToPadding = false
+                }
             }
         }
 
