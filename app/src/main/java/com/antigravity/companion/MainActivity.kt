@@ -762,7 +762,7 @@ class MainActivity : AppCompatActivity() {
                     """.trimIndent()
                 ) { rawResult ->
                     val text = try {
-                        if (rawResult != null && rawResult != "null" && rawResult != """") {
+                        if (rawResult != null && rawResult != "null" && rawResult != "\"\"") {
                             org.json.JSONTokener(rawResult).nextValue().toString()
                         } else ""
                     } catch (ex: Exception) {
