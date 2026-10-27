@@ -383,29 +383,38 @@ class MainActivity : AppCompatActivity() {
                     if (document.body) document.body.lang = 'zh-CN';
                 } catch(e) {}
 
-                // 3. 极简、连续、零硬边界的自然选词与防干扰样式
+                // 3. 极简、连续、高跟手度、零硬边界的自然选词样式
                 function getSelectionCSS() {
                     return 'html, body { ' +
                         '-webkit-text-size-adjust: 100% !important; ' +
                         'text-size-adjust: 100% !important; ' +
                         '} ' +
-                        '/* 彻底消灭桌面端 Quote 引用气泡与碰撞拦截 */ ' +
-                        '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="selection-popup-quote"] { ' +
+                        '/* 彻底、多层级物理消灭桌面端 Quote 气泡 */ ' +
+                        '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="selection-popup"], button[data-testid*="quote"], div:has(> button[data-testid*="selection-quote-button"]) { ' +
                         'display: none !important; ' +
                         'visibility: hidden !important; ' +
                         'pointer-events: none !important; ' +
                         'width: 0 !important; ' +
                         'height: 0 !important; ' +
                         'opacity: 0 !important; ' +
-                        'position: absolute !important; ' +
+                        'position: fixed !important; ' +
+                        'top: -9999px !important; ' +
                         'left: -9999px !important; ' +
+                        'transform: scale(0) !important; ' +
+                        'z-index: -9999 !important; ' +
                         '} ' +
-                        '/* 仅在消息正文容器开启 user-select，内部 span/code 自然继承，绝不设硬边界孤岛 */ ' +
+                        '/* 极致跟手度与高精度排版：舒适行高防止手指上下抖动跳行，微字距防止选词粘连 */ ' +
                         '.select-text, [class*="select-text"], div[role="article"] { ' +
                         '-webkit-user-select: text !important; ' +
                         'user-select: text !important; ' +
                         '-webkit-touch-callout: default !important; ' +
+                        'touch-action: pan-y !important; ' +
+                        'line-height: 1.75 !important; ' +
+                        'letter-spacing: 0.025em !important; ' +
                         '} ' +
+                        '/* 高清晰选区高亮颜色，手指遮挡下也能看清当前光标位置 */ ' +
+                        '::selection { background: rgba(30, 142, 62, 0.28) !important; color: inherit !important; } ' +
+                        '::-webkit-selection { background: rgba(30, 142, 62, 0.28) !important; color: inherit !important; } ' +
                         '/* 避免非文本元素（按钮、头像、图标）误入选区引发全选 */ ' +
                         'button, svg, [role="button"], .__ag_msg_copy_btn { ' +
                         '-webkit-user-select: none !important; ' +
@@ -414,7 +423,7 @@ class MainActivity : AppCompatActivity() {
                         '.monaco-editor .view-overlays { pointer-events: none !important; } ' +
                         'table td, table th { ' +
                         'white-space: normal !important; ' +
-                        'line-height: 1.5 !important; ' +
+                        'line-height: 1.6 !important; ' +
                         '} ' +
                         '.__ag_msg_copy_btn { ' +
                         'position: absolute; right: 8px; top: 6px; z-index: 40; ' +
@@ -482,14 +491,25 @@ class MainActivity : AppCompatActivity() {
                 function removeQuotePopups(targetDoc) {
                     if (!targetDoc) return;
                     try {
-                        var popups = targetDoc.querySelectorAll('.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"]');
+                        var popups = targetDoc.querySelectorAll('.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], button[data-testid*="selection-quote-button"]');
                         for (var i = 0; i < popups.length; i++) {
-                            if (popups[i] && popups[i].parentNode) {
-                                popups[i].parentNode.removeChild(popups[i]);
+                            var el = popups[i];
+                            var p = el;
+                            while (p && p !== targetDoc.body && p.parentElement && (p.classList.contains('selection-popup') || p.offsetHeight < 80)) {
+                                el = p;
+                                p = p.parentElement;
+                            }
+                            if (el && el.parentNode) {
+                                el.parentNode.removeChild(el);
                             }
                         }
                     } catch(e) {}
                 }
+
+                // 随时猎杀新冒出的 Quote 气泡
+                document.addEventListener('selectionchange', function() {
+                    removeQuotePopups(document);
+                }, true);
 
                 function injectStylesAndFixes(targetDoc) {
                     if (!targetDoc) return;
