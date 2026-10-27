@@ -348,48 +348,103 @@ class MainActivity : AppCompatActivity() {
                         'user-select: text !important; ' +
                         '}';
                 }
-
                 // 全局坐标文本探测入口（由原生 GestureDetector 直接调用）
                 window.__extractTextAtPoint = function(x, y) {
+                    function clearSel(doc) {
+                        try {
+                            var sel = (doc.defaultView || window).getSelection();
+                            if (sel) sel.removeAllRanges();
+                        } catch(e) {}
+                    }
+
                     function getFromDoc(doc, localX, localY) {
                         if (!doc) return "";
+                        clearSel(doc);
                         var el = doc.elementFromPoint(localX, localY);
                         if (!el) {
-                            var probes = [[0, -10], [0, 10], [-10, 0], [10, 0], [0, -20], [0, 20]];
+                            var probes = [[0, -15], [0, 15], [-15, 0], [15, 0], [0, -30], [0, 30], [-30, 0], [30, 0]];
                             for (var p = 0; p < probes.length; p++) {
                                 var c = doc.elementFromPoint(localX + probes[p][0], localY + probes[p][1]);
                                 if (c) { el = c; break; }
                             }
                         }
-                        if (!el) return "";
-
-                        if (el.tagName === 'IFRAME') {
+                        if (el && el.tagName === 'IFRAME') {
                             try {
                                 var iframeDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
                                 if (iframeDoc) {
                                     var r = el.getBoundingClientRect();
-                                    return getFromDoc(iframeDoc, localX - r.left, localY - r.top);
+                                    var sub = getFromDoc(iframeDoc, localX - r.left, localY - r.top);
+                                    if (sub) return sub;
                                 }
                             } catch (e) {}
                         }
+                        if (!el) return "";
 
                         if (el.closest('input, textarea, select, [contenteditable="true"], .chat-input-widget')) {
                             return "";
                         }
 
-                        var container = el.closest('.chat-response-content, .rendered-markdown, .message-content, [class*="message"], [class*="response"]') ||
+                        var container = el.closest('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="message"], [class*="response"]') ||
                                         el.closest('table, pre, code, blockquote, li, p, h1, h2, h3, h4, h5, h6') ||
                                         el;
 
                         return (container.innerText || container.textContent || '').trim();
                     }
-                    return getFromDoc(document, x, y);
+
+                    var res = getFromDoc(document, x, y);
+                    if (!res) {
+                        try {
+                            var bubbles = document.querySelectorAll('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="response"], [class*="message"]');
+                            if (bubbles.length > 0) {
+                                var last = bubbles[bubbles.length - 1];
+                                res = (last.innerText || last.textContent || '').trim();
+                            }
+                        } catch(e) {}
+                    }
+                    clearSel(document);
+                    return res || "";
                 };
 
                 // 2. 原生纯文本提取器：长按消息气泡唤出 Android 原生 BottomSheet 逐字自由选词
                 function initSmartTextExtractor(targetDoc) {
                     if (!targetDoc || targetDoc.__ag_extractor_injected) return;
                     targetDoc.__ag_extractor_injected = true;
+
+                    // 核心防御：拦截 Chromium 移动端长按上下文菜单事件，就地扼杀 Chrome 原生选区抢跑
+                    targetDoc.addEventListener('contextmenu', function(e) {
+                        var el = e.target;
+                        if (!el) return;
+                        if (el.closest('input, textarea, select, [contenteditable="true"]')) {
+                            return;
+                        }
+                        e.preventDefault();
+                        e.stopPropagation();
+
+                        try {
+                            var sel = (targetDoc.defaultView || window).getSelection();
+                            if (sel) sel.removeAllRanges();
+                        } catch(err) {}
+
+                        var msgContainer = el.closest('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="message"], [class*="response"]');
+                        var targetContainer = msgContainer || el.closest('table, pre, code, blockquote, li, p, h1, h2, h3, h4, h5, h6') || el;
+                        var text = (targetContainer.innerText || targetContainer.textContent || '').trim();
+                        if (!text) {
+                            var bubbles = targetDoc.querySelectorAll('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="response"], [class*="message"]');
+                            if (bubbles.length > 0) {
+                                text = (bubbles[bubbles.length - 1].innerText || bubbles[bubbles.length - 1].textContent || '').trim();
+                            }
+                        }
+
+                        if (text && text.length > 0) {
+                            if (window.AndroidBridge && window.AndroidBridge.vibrate) {
+                                window.AndroidBridge.vibrate(22);
+                            }
+                            if (window.AndroidBridge && window.AndroidBridge.openTextExtractionSheet) {
+                                window.AndroidBridge.openTextExtractionSheet(text);
+                            }
+                        }
+                        return false;
+                    }, true);
 
                     var pressTimer = null;
                     var startX = 0;
@@ -418,11 +473,20 @@ class MainActivity : AppCompatActivity() {
                             }
 
                             // 优先锁定所在的 AI 消息气泡或文本块
-                            var msgContainer = el.closest('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content');
+                            var msgContainer = el.closest('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="message"], [class*="response"]');
                             var targetContainer = msgContainer || el.closest('table, pre, code, blockquote, li, p, h1, h2, h3, h4, h5, h6') || el;
-
                             var text = (targetContainer.innerText || targetContainer.textContent || '').trim();
+                            if (!text) {
+                                var bubbles = targetDoc.querySelectorAll('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="response"], [class*="message"]');
+                                if (bubbles.length > 0) {
+                                    text = (bubbles[bubbles.length - 1].innerText || bubbles[bubbles.length - 1].textContent || '').trim();
+                                }
+                            }
                             if (text && text.length > 0) {
+                                try {
+                                    var sel = (targetDoc.defaultView || window).getSelection();
+                                    if (sel) sel.removeAllRanges();
+                                } catch(err) {}
                                 if (window.AndroidBridge && window.AndroidBridge.vibrate) {
                                     window.AndroidBridge.vibrate(20);
                                 }
@@ -745,12 +809,19 @@ class MainActivity : AppCompatActivity() {
                 // 1. 原生立即震动反馈（让用户立刻感知触感）
                 vibratePhone(22)
 
-                // 2. 坐标转换（物理像素 -> 视口 CSS 像素）
-                val scale = if (binding.webView.scale > 0f) binding.webView.scale else resources.displayMetrics.density
-                val cssX = (e.x / scale).toInt()
-                val cssY = (e.y / scale).toInt()
+                // 2. 发送 ACTION_CANCEL 终止 WebView / Chromium 内部默认长按选区行为
+                try {
+                    val cancelEvent = MotionEvent.obtain(e.downTime, e.eventTime, MotionEvent.ACTION_CANCEL, e.x, e.y, 0)
+                    binding.webView.dispatchTouchEvent(cancelEvent)
+                    cancelEvent.recycle()
+                } catch (ex: Exception) {}
 
-                // 3. 提取命中区域文本并弹出 BottomSheet
+                // 3. 真实屏幕密度换算（物理像素 -> 视口 CSS 像素）
+                val density = resources.displayMetrics.density.coerceAtLeast(1f)
+                val cssX = (e.x / density).toInt()
+                val cssY = (e.y / density).toInt()
+
+                // 4. 提取命中区域文本并弹出 BottomSheet
                 binding.webView.evaluateJavascript(
                     """
                     (function() {
