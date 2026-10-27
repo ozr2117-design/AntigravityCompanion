@@ -346,16 +346,23 @@ class MainActivity : AppCompatActivity() {
                         'input, textarea, [contenteditable="true"] { ' +
                         '-webkit-user-select: text !important; ' +
                         'user-select: text !important; ' +
+                        '} ' +
+                        '/* 彻底禁用桌面端 Quote 浮动菜单与打架遮挡 */ ' +
+                        '.selection-popup, .selection-quote-popup, [data-testid="selection-quote-button"] { ' +
+                        'display: none !important; ' +
+                        'visibility: hidden !important; ' +
+                        'pointer-events: none !important; ' +
                         '}';
                 }
                 // 记录最近一次触控屏幕坐标（视口 CSS 像素）
                 window.__lastTouchX = 0;
                 window.__lastTouchY = 0;
 
-                // 全局高精度文本探测器（过滤浮动提示框与输入控件，语义锚定消息正文）
+                // 全局高精度文本探测器（过滤浮动提示框、穿透桌面浮层，精准锚定消息正文）
                 window.__findBestTextAtPoint = function(x, y) {
-                    var localX = (x !== undefined && x !== null && x > 0) ? x : (window.__lastTouchX || 0);
-                    var localY = (y !== undefined && y !== null && y > 0) ? y : (window.__lastTouchY || 0);
+                    // 优先使用真实触控事件记录的高精度 CSS 视口坐标（彻底规避 density 与状态栏换算误差）
+                    var localX = (window.__lastTouchX > 0) ? window.__lastTouchX : ((x !== undefined && x !== null && x > 0) ? x : 0);
+                    var localY = (window.__lastTouchY > 0) ? window.__lastTouchY : ((y !== undefined && y !== null && y > 0) ? y : 0);
 
                     function clearSel(doc) {
                         try {
@@ -370,7 +377,7 @@ class MainActivity : AppCompatActivity() {
                         var low = txt.toLowerCase().trim();
                         return low === 'feedback' || low === 'copy' || low === 'good response' || 
                                low === 'bad response' || low === 'like' || low === 'dislike' || 
-                               low === 'retry' || low === 'share';
+                               low === 'retry' || low === 'share' || low === 'quote';
                     }
 
                     function extractValidMessageFromElement(el) {
@@ -434,7 +441,7 @@ class MainActivity : AppCompatActivity() {
                         // 6. 向上逐级溯源通用文本块
                         var cur = el;
                         while (cur && cur !== document.body && cur !== document.documentElement) {
-                            if (cur.matches && cur.matches('.select-text, [class*="select-text"], .scroll-mt-4, [class*="scroll-mt"], div.whitespace-pre-wrap, article, section, p, blockquote')) {
+                            if (cur.matches && cur.matches('.select-text, [class*="select-text"], .scroll-mt-4, [class*="scroll-mt"], div.whitespace-pre-wrap, article, section, p, blockquote, li, ol, ul')) {
                                 var gt = (cur.innerText || cur.textContent || '').trim();
                                 if (gt.length > 0 && gt.length < 50000 && !isSpuriousAction(gt)) return gt;
                             }
@@ -469,6 +476,14 @@ class MainActivity : AppCompatActivity() {
                                         }
                                     } catch (e) {}
                                 }
+                                // 若命中浮层/提示框，穿透探视其下方真实正文
+                                if (c.closest && c.closest('[role="tooltip"], .selection-popup, .selection-quote-popup, [data-radix-portal], [data-radix-popper-content-wrapper]')) {
+                                    var origPE = c.style.pointerEvents;
+                                    c.style.pointerEvents = 'none';
+                                    var under = doc.elementFromPoint(px, py);
+                                    c.style.pointerEvents = origPE;
+                                    if (under) c = under;
+                                }
                                 var t = extractValidMessageFromElement(c);
                                 if (t && t.length > 0) return t;
                             }
@@ -478,7 +493,7 @@ class MainActivity : AppCompatActivity() {
 
                     var result = probeDoc(document, localX, localY);
                     if (!result) {
-                        // 全局兜底：如果放射探测未命中具体文本，锁定视口内距离触摸 Y 坐标最近的消息气泡
+                        // 全局兜底：优先匹配触碰点垂直范围所在的消息气泡，次选垂直距离最近者
                         try {
                             var allBubbles = document.querySelectorAll('.select-text, [class*="select-text"], div.whitespace-pre-wrap, .scroll-mt-4');
                             var best = null;
@@ -488,6 +503,14 @@ class MainActivity : AppCompatActivity() {
                                 if (b.closest('[role="tooltip"], [data-radix-portal], [data-radix-popper-content-wrapper]')) continue;
                                 var rect = b.getBoundingClientRect();
                                 if (rect.height === 0 || rect.width === 0) continue;
+                                // 黄金准则：如果触摸坐标直接落在该气泡的上下边界内，直接判定命中当前气泡！
+                                if (localY >= rect.top && localY <= rect.bottom) {
+                                    var textInside = extractValidMessageFromElement(b);
+                                    if (textInside && textInside.length > 0) {
+                                        best = b;
+                                        break;
+                                    }
+                                }
                                 var dist = Math.abs((rect.top + rect.height / 2) - localY);
                                 if (dist < bestDist) {
                                     bestDist = dist;
@@ -904,12 +927,20 @@ class MainActivity : AppCompatActivity() {
                 val cssX = (e.x / density).toInt()
                 val cssY = (e.y / density).toInt()
 
-                // 3. 提取命中区域文本并弹出 BottomSheet（绝不 dispatch ACTION_CANCEL，防触控管道截断）
+                // 3. 提取命中区域文本并弹出 BottomSheet（带异常防护与即时选区兜底）
                 binding.webView.evaluateJavascript(
                     """
                     (function() {
-                        if (typeof window.__findBestTextAtPoint === 'function') {
-                            return window.__findBestTextAtPoint($cssX, $cssY);
+                        try {
+                            if (typeof window.__findBestTextAtPoint === 'function') {
+                                var res = window.__findBestTextAtPoint($cssX, $cssY);
+                                if (res && res.length > 0) return res;
+                            }
+                            // 兜底：若网页中已有正在选中的文字，直接提取当前选区文本
+                            var curSel = (window.getSelection ? window.getSelection().toString() : "").trim();
+                            if (curSel && curSel.length > 0) return curSel;
+                        } catch(e) {
+                            return "ERR:" + e.message;
                         }
                         return "";
                     })();
@@ -920,9 +951,9 @@ class MainActivity : AppCompatActivity() {
                             org.json.JSONTokener(rawResult).nextValue().toString()
                         } else ""
                     } catch (ex: Exception) {
-                        rawResult?.trim('"')?.replace("\\n", "\n") ?: ""
+                        rawResult?.trim('"')?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: ""
                     }
-                    if (text.isNotBlank()) {
+                    if (text.isNotBlank() && !text.startsWith("ERR:")) {
                         showTextExtractionSheet(text)
                     } else {
                         Toast.makeText(this@MainActivity, "长按消息内容即可选词复制", Toast.LENGTH_SHORT).show()
