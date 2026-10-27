@@ -347,11 +347,16 @@ class MainActivity : AppCompatActivity() {
                         '-webkit-user-select: text !important; ' +
                         'user-select: text !important; ' +
                         '} ' +
-                        '/* 彻底禁用桌面端 Quote 浮动菜单与打架遮挡 */ ' +
-                        '.selection-popup, .selection-quote-popup, [data-testid="selection-quote-button"] { ' +
+                        '/* 彻底绝杀桌面端 Quote 气泡与 Chromium 网页内病态跨块大蓝块 */ ' +
+                        '.selection-popup, .selection-quote-popup, [data-testid="selection-quote-button"], [data-testid="selection-popup-quote-button"] { ' +
                         'display: none !important; ' +
                         'visibility: hidden !important; ' +
                         'pointer-events: none !important; ' +
+                        '} ' +
+                        '.select-text, [class*="select-text"], .scroll-mt-4 { ' +
+                        '-webkit-touch-callout: none !important; ' +
+                        '-webkit-user-select: none !important; ' +
+                        'user-select: none !important; ' +
                         '}';
                 }
                 // 记录最近一次触控屏幕坐标（视口 CSS 像素）
@@ -664,6 +669,21 @@ class MainActivity : AppCompatActivity() {
                         if (viewport) {
                             viewport.content = 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes';
                         }
+
+                        // 单页应用持久样式守护：React 切换路由销毁重建 DOM 时，瞬时补全防护样式
+                        if (!targetDoc.__ag_style_observer_installed && window.MutationObserver) {
+                            targetDoc.__ag_style_observer_installed = true;
+                            var styleObserver = new MutationObserver(function() {
+                                if (!targetDoc.getElementById(styleId)) {
+                                    var restyle = targetDoc.createElement('style');
+                                    restyle.id = styleId;
+                                    restyle.type = 'text/css';
+                                    restyle.innerHTML = getSelectionCSS();
+                                    (targetDoc.head || targetDoc.documentElement).appendChild(restyle);
+                                }
+                            });
+                            styleObserver.observe(targetDoc.documentElement, { childList: true, subtree: true });
+                        }
                     } catch (e) {}
 
                     // 启动高精度逐字触摸选择引擎
@@ -927,33 +947,186 @@ class MainActivity : AppCompatActivity() {
                 val cssX = (e.x / density).toInt()
                 val cssY = (e.y / density).toInt()
 
-                // 3. 提取命中区域文本并弹出 BottomSheet（带异常防护与即时选区兜底）
-                binding.webView.evaluateJavascript(
-                    """
-                    (function() {
-                        try {
-                            if (typeof window.__findBestTextAtPoint === 'function') {
-                                var res = window.__findBestTextAtPoint($cssX, $cssY);
-                                if (res && res.length > 0) return res;
-                            }
-                            // 兜底：若网页中已有正在选中的文字，直接提取当前选区文本
-                            var curSel = (window.getSelection ? window.getSelection().toString() : "").trim();
-                            if (curSel && curSel.length > 0) return curSel;
-                        } catch(e) {
-                            return "ERR:" + e.message;
+                // 3. 提取命中区域文本并弹出 BottomSheet（自包含独立执行引擎 + Base64 无损传输）
+                val selfContainedScript = """
+                (function() {
+                    try {
+                        // 1. 确保防护样式即时就位
+                        var styleId = '__ag_self_contained_style';
+                        if (!document.getElementById(styleId)) {
+                            var st = document.createElement('style');
+                            st.id = styleId;
+                            st.textContent = '.selection-popup, .selection-quote-popup, [data-testid="selection-quote-button"], [data-testid="selection-popup-quote-button"] { display: none !important; visibility: hidden !important; pointer-events: none !important; } .select-text, [class*="select-text"], .scroll-mt-4 { -webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; } input, textarea, [contenteditable="true"] { -webkit-user-select: text !important; user-select: text !important; }';
+                            (document.head || document.documentElement).appendChild(st);
                         }
+
+                        // 2. 清除网页已有选择状态
+                        try {
+                            var sel = window.getSelection();
+                            if (sel) sel.removeAllRanges();
+                        } catch(e) {}
+
+                        // 3. 确定触控坐标（优先使用 touchstart 高精度原生视口坐标，回退到 Density 换算坐标）
+                        var targetX = ($cssX > 0) ? $cssX : 0;
+                        var targetY = ($cssY > 0) ? $cssY : 0;
+                        if (window.__lastTouchX > 0 && window.__lastTouchY > 0) {
+                            targetX = window.__lastTouchX;
+                            targetY = window.__lastTouchY;
+                        }
+
+                        function isSpurious(txt) {
+                            if (!txt) return true;
+                            if (txt.length > 25) return false;
+                            var low = txt.toLowerCase().trim();
+                            return low === 'feedback' || low === 'copy' || low === 'good response' || 
+                                   low === 'bad response' || low === 'like' || low === 'dislike' || 
+                                   low === 'retry' || low === 'share' || low === 'quote';
+                        }
+
+                        function extractFromElement(el) {
+                            if (!el) return "";
+                            if (el.closest('[role="tooltip"], [data-radix-portal], [data-floating-ui-portal], .selection-popup, .selection-quote-popup')) {
+                                return "";
+                            }
+                            if (el.closest('input, textarea, select, [contenteditable="true"], .chat-input-widget')) {
+                                return "";
+                            }
+
+                            // 优先命中核心正文排版容器
+                            var selectText = el.closest('.select-text, [class*="select-text"]');
+                            if (selectText) {
+                                var t = (selectText.innerText || selectText.textContent || '').trim();
+                                if (t.length > 0 && !isSpurious(t)) return t;
+                            }
+
+                            // 优先命中独立代码块
+                            var codeBlock = el.closest('div[class*="code-block"], pre');
+                            if (codeBlock) {
+                                var ct = (codeBlock.innerText || codeBlock.textContent || '').trim();
+                                if (ct.length > 0 && !isSpurious(ct)) return ct;
+                            }
+
+                            // 优先命中用户输入引用气泡
+                            var userQuotable = el.closest('[data-quotable="true"], div.whitespace-pre-wrap, [data-testid="user-input-step"]');
+                            if (userQuotable) {
+                                var qt = (userQuotable.innerText || userQuotable.textContent || '').trim();
+                                if (qt.length > 0 && !isSpurious(qt)) return qt;
+                            }
+
+                            // 命中外层消息行外壳（向上追溯整条消息正文）
+                            var row = el.closest('.scroll-mt-4, [class*="scroll-mt"], [data-testid*="step"], div[role="article"], div.flex.items-start, div.flex.items-end');
+                            if (row) {
+                                var c = row.querySelector('.select-text, [class*="select-text"]');
+                                if (c) {
+                                    var ct2 = (c.innerText || c.textContent || '').trim();
+                                    if (ct2.length > 0 && !isSpurious(ct2)) return ct2;
+                                }
+                                var p = row.querySelector('[data-quotable="true"], div.whitespace-pre-wrap, [class*="bg-card"]');
+                                if (p) {
+                                    var pt = (p.innerText || p.textContent || '').trim();
+                                    if (pt.length > 0 && !isSpurious(pt)) return pt;
+                                }
+                                var cb = row.querySelector('div[class*="code-block"], pre');
+                                if (cb) {
+                                    var cbt = (cb.innerText || cb.textContent || '').trim();
+                                    if (cbt.length > 0 && !isSpurious(cbt)) return cbt;
+                                }
+                                var clone = row.cloneNode(true);
+                                var btns = clone.querySelectorAll('button, [role="button"], svg, .flex.items-center.gap-1');
+                                btns.forEach(b => { if (b && b.parentElement) b.parentElement.removeChild(b); });
+                                var rt = (clone.innerText || clone.textContent || '').trim();
+                                if (rt.length > 0 && !isSpurious(rt)) return rt;
+                            }
+
+                            // 逐级向上溯源通用文本块
+                            var cur = el;
+                            while (cur && cur !== document.body && cur !== document.documentElement) {
+                                if (cur.matches && cur.matches('.select-text, [class*="select-text"], .scroll-mt-4, [class*="scroll-mt"], div.whitespace-pre-wrap, article, section, p, blockquote, li, ol, ul')) {
+                                    var gt = (cur.innerText || cur.textContent || '').trim();
+                                    if (gt.length > 0 && gt.length < 50000 && !isSpurious(gt)) return gt;
+                                }
+                                cur = cur.parentElement;
+                            }
+                            return "";
+                        }
+
+                        // 4. 多点放射探测（覆盖触碰点周边 40px 内 13 个点，穿透浮层）
+                        var probes = [
+                            [0, 0], [0, -15], [0, 15], [-15, 0], [15, 0],
+                            [-25, -25], [25, 25], [-25, 25], [25, -25],
+                            [0, -40], [0, 40], [-40, 0], [40, 0]
+                        ];
+                        for (var i = 0; i < probes.length; i++) {
+                            var px = targetX + probes[i][0];
+                            var py = targetY + probes[i][1];
+                            var hit = document.elementFromPoint(px, py);
+                            if (hit) {
+                                if (hit.closest && hit.closest('[role="tooltip"], .selection-popup, .selection-quote-popup, [data-radix-portal]')) {
+                                    var oldPe = hit.style.pointerEvents;
+                                    hit.style.pointerEvents = 'none';
+                                    var under = document.elementFromPoint(px, py);
+                                    hit.style.pointerEvents = oldPe;
+                                    if (under) hit = under;
+                                }
+                                var txt = extractFromElement(hit);
+                                if (txt && txt.length > 0) {
+                                    return window.btoa(unescape(encodeURIComponent(txt)));
+                                }
+                            }
+                        }
+
+                        // 5. 视口长消息判定黄金准则：触碰 Y 坐标直接落在某条消息的 [rect.top, rect.bottom] 内
+                        var allBubbles = document.querySelectorAll('.select-text, [class*="select-text"], div.whitespace-pre-wrap, .scroll-mt-4');
+                        var best = null;
+                        var bestDist = Infinity;
+                        for (var j = 0; j < allBubbles.length; j++) {
+                            var b = allBubbles[j];
+                            if (b.closest('[role="tooltip"], [data-radix-portal]')) continue;
+                            var r = b.getBoundingClientRect();
+                            if (r.height === 0 || r.width === 0) continue;
+                            if (targetY >= r.top && targetY <= r.bottom) {
+                                var tIn = extractFromElement(b);
+                                if (tIn && tIn.length > 0) {
+                                    return window.btoa(unescape(encodeURIComponent(tIn)));
+                                }
+                            }
+                            var d = Math.abs((r.top + r.height / 2) - targetY);
+                            if (d < bestDist) {
+                                bestDist = d;
+                                best = b;
+                            }
+                        }
+                        if (best) {
+                            var btxt = extractFromElement(best);
+                            if (btxt && btxt.length > 0) {
+                                return window.btoa(unescape(encodeURIComponent(btxt)));
+                            }
+                        }
+
+                        // 6. 即时选区兜底
+                        var curSel = (window.getSelection ? window.getSelection().toString() : "").trim();
+                        if (curSel && curSel.length > 0) {
+                            return window.btoa(unescape(encodeURIComponent(curSel)));
+                        }
+
                         return "";
-                    })();
-                    """.trimIndent()
-                ) { rawResult ->
-                    val text = try {
-                        if (rawResult != null && rawResult != "null" && rawResult != "\"\"") {
-                            org.json.JSONTokener(rawResult).nextValue().toString()
-                        } else ""
-                    } catch (ex: Exception) {
-                        rawResult?.trim('"')?.replace("\\n", "\n")?.replace("\\\"", "\"") ?: ""
+                    } catch(err) {
+                        return "ERR:" + err.message;
                     }
-                    if (text.isNotBlank() && !text.startsWith("ERR:")) {
+                })()
+                """.trimIndent()
+
+                binding.webView.evaluateJavascript(selfContainedScript) { rawResult ->
+                    val cleanRaw = rawResult?.trim('"')?.replace("\\", "") ?: ""
+                    val text = if (cleanRaw.isNotBlank() && cleanRaw != "null" && !cleanRaw.startsWith("ERR:")) {
+                        try {
+                            String(android.util.Base64.decode(cleanRaw, android.util.Base64.DEFAULT), Charsets.UTF_8).trim()
+                        } catch (e: Exception) {
+                            cleanRaw
+                        }
+                    } else ""
+
+                    if (text.isNotBlank()) {
                         showTextExtractionSheet(text)
                     } else {
                         Toast.makeText(this@MainActivity, "长按消息内容即可选词复制", Toast.LENGTH_SHORT).show()
