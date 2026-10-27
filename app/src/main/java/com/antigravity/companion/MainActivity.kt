@@ -348,8 +348,15 @@ class MainActivity : AppCompatActivity() {
                         'user-select: text !important; ' +
                         '}';
                 }
-                // 全局坐标文本探测入口（由原生 GestureDetector 直接调用）
-                window.__extractTextAtPoint = function(x, y) {
+                // 记录最近一次触控屏幕坐标（视口 CSS 像素）
+                window.__lastTouchX = 0;
+                window.__lastTouchY = 0;
+
+                // 全局高精度文本探测器（支持 iframe 穿透、多点放射探测与 Tailwind 语义匹配）
+                window.__findBestTextAtPoint = function(x, y) {
+                    var localX = (x !== undefined && x !== null && x > 0) ? x : (window.__lastTouchX || 0);
+                    var localY = (y !== undefined && y !== null && y > 0) ? y : (window.__lastTouchY || 0);
+
                     function clearSel(doc) {
                         try {
                             var sel = (doc.defaultView || window).getSelection();
@@ -357,58 +364,115 @@ class MainActivity : AppCompatActivity() {
                         } catch(e) {}
                     }
 
-                    function getFromDoc(doc, localX, localY) {
-                        if (!doc) return "";
-                        clearSel(doc);
-                        var el = doc.elementFromPoint(localX, localY);
-                        if (!el) {
-                            var probes = [[0, -15], [0, 15], [-15, 0], [15, 0], [0, -30], [0, 30], [-30, 0], [30, 0]];
-                            for (var p = 0; p < probes.length; p++) {
-                                var c = doc.elementFromPoint(localX + probes[p][0], localY + probes[p][1]);
-                                if (c) { el = c; break; }
-                            }
+                    function findContainer(el) {
+                        if (!el) return null;
+                        if (el.closest('input, textarea, select, [contenteditable="true"], .chat-input-widget, button, [role="button"]')) {
+                            return null;
                         }
-                        if (el && el.tagName === 'IFRAME') {
-                            try {
-                                var iframeDoc = el.contentDocument || (el.contentWindow && el.contentWindow.document);
-                                if (iframeDoc) {
-                                    var r = el.getBoundingClientRect();
-                                    var sub = getFromDoc(iframeDoc, localX - r.left, localY - r.top);
-                                    if (sub) return sub;
+
+                        // 优先锁定 Antigravity Web 的消息外壳与 Markdown 排版容器
+                        var msg = el.closest(
+                            '.select-text, [class*="select-text"], ' +
+                            '.scroll-mt-4, [class*="scroll-mt"], ' +
+                            'div[class*="code-block"], ' +
+                            'div.flex.items-start, div.flex.items-end, ' +
+                            'div[class*="bg-card"], div.whitespace-pre-wrap, ' +
+                            'article, section, pre, blockquote, table, p, li'
+                        );
+                        if (msg) return msg;
+
+                        // 逐级向上溯源包含有效文本的最近非全屏块容器
+                        var cur = el;
+                        while (cur && cur !== document.body && cur !== document.documentElement) {
+                            var text = (cur.innerText || cur.textContent || '').trim();
+                            if (text.length > 0 && text.length < 50000) {
+                                var parent = cur.parentElement;
+                                if (parent && parent !== document.body && (parent.innerText || '').trim() === text) {
+                                    cur = parent;
+                                    continue;
                                 }
-                            } catch (e) {}
+                                return cur;
+                            }
+                            cur = cur.parentElement;
                         }
-                        if (!el) return "";
-
-                        if (el.closest('input, textarea, select, [contenteditable="true"], .chat-input-widget')) {
-                            return "";
-                        }
-
-                        var container = el.closest('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="message"], [class*="response"]') ||
-                                        el.closest('table, pre, code, blockquote, li, p, h1, h2, h3, h4, h5, h6') ||
-                                        el;
-
-                        return (container.innerText || container.textContent || '').trim();
+                        return el;
                     }
 
-                    var res = getFromDoc(document, x, y);
-                    if (!res) {
+                    function probeDoc(doc, probeX, probeY) {
+                        if (!doc) return "";
+                        clearSel(doc);
+
+                        // 放射性多点探测（半径 40px 内 13 个探测点，彻底杜绝内边距/行间距落空）
+                        var probes = [
+                            [0, 0], [0, -15], [0, 15], [-15, 0], [15, 0],
+                            [-25, -25], [25, 25], [-25, 25], [25, -25],
+                            [0, -40], [0, 40], [-40, 0], [40, 0]
+                        ];
+                        for (var p = 0; p < probes.length; p++) {
+                            var px = probeX + probes[p][0];
+                            var py = probeY + probes[p][1];
+                            var c = doc.elementFromPoint(px, py);
+                            if (c) {
+                                if (c.tagName === 'IFRAME') {
+                                    try {
+                                        var iframeDoc = c.contentDocument || (c.contentWindow && c.contentWindow.document);
+                                        if (iframeDoc) {
+                                            var r = c.getBoundingClientRect();
+                                            var sub = probeDoc(iframeDoc, px - r.left, py - r.top);
+                                            if (sub) return sub;
+                                        }
+                                    } catch (e) {}
+                                }
+                                var container = findContainer(c);
+                                if (container) {
+                                    var t = (container.innerText || container.textContent || '').trim();
+                                    if (t.length > 0) return t;
+                                }
+                            }
+                        }
+                        return "";
+                    }
+
+                    var result = probeDoc(document, localX, localY);
+                    if (!result) {
+                        // 全局兜底：如果放射探测未命中具体文本，锁定视口内距离触摸 Y 坐标最近的消息气泡
                         try {
-                            var bubbles = document.querySelectorAll('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="response"], [class*="message"]');
-                            if (bubbles.length > 0) {
-                                var last = bubbles[bubbles.length - 1];
-                                res = (last.innerText || last.textContent || '').trim();
+                            var allBubbles = document.querySelectorAll('.select-text, [class*="select-text"], [class*="scroll-mt"], div.whitespace-pre-wrap');
+                            var best = null;
+                            var bestDist = Infinity;
+                            for (var i = 0; i < allBubbles.length; i++) {
+                                var rect = allBubbles[i].getBoundingClientRect();
+                                var dist = Math.abs((rect.top + rect.height / 2) - localY);
+                                if (dist < bestDist) {
+                                    bestDist = dist;
+                                    best = allBubbles[i];
+                                }
+                            }
+                            if (best) {
+                                result = (best.innerText || best.textContent || '').trim();
                             }
                         } catch(e) {}
                     }
                     clearSel(document);
-                    return res || "";
+                    return result || "";
                 };
+
+                // 保持兼容旧方法别名
+                window.__extractTextAtPoint = window.__findBestTextAtPoint;
 
                 // 2. 原生纯文本提取器：长按消息气泡唤出 Android 原生 BottomSheet 逐字自由选词
                 function initSmartTextExtractor(targetDoc) {
                     if (!targetDoc || targetDoc.__ag_extractor_injected) return;
                     targetDoc.__ag_extractor_injected = true;
+
+                    function callBridge(text) {
+                        if (!text || text.length === 0) return;
+                        var bridge = window.AndroidBridge || (window.top && window.top.AndroidBridge);
+                        if (bridge) {
+                            if (bridge.vibrate) bridge.vibrate(22);
+                            if (bridge.openTextExtractionSheet) bridge.openTextExtractionSheet(text);
+                        }
+                    }
 
                     // 核心防御：拦截 Chromium 移动端长按上下文菜单事件，就地扼杀 Chrome 原生选区抢跑
                     targetDoc.addEventListener('contextmenu', function(e) {
@@ -425,24 +489,8 @@ class MainActivity : AppCompatActivity() {
                             if (sel) sel.removeAllRanges();
                         } catch(err) {}
 
-                        var msgContainer = el.closest('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="message"], [class*="response"]');
-                        var targetContainer = msgContainer || el.closest('table, pre, code, blockquote, li, p, h1, h2, h3, h4, h5, h6') || el;
-                        var text = (targetContainer.innerText || targetContainer.textContent || '').trim();
-                        if (!text) {
-                            var bubbles = targetDoc.querySelectorAll('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="response"], [class*="message"]');
-                            if (bubbles.length > 0) {
-                                text = (bubbles[bubbles.length - 1].innerText || bubbles[bubbles.length - 1].textContent || '').trim();
-                            }
-                        }
-
-                        if (text && text.length > 0) {
-                            if (window.AndroidBridge && window.AndroidBridge.vibrate) {
-                                window.AndroidBridge.vibrate(22);
-                            }
-                            if (window.AndroidBridge && window.AndroidBridge.openTextExtractionSheet) {
-                                window.AndroidBridge.openTextExtractionSheet(text);
-                            }
-                        }
+                        var text = window.__findBestTextAtPoint(e.clientX, e.clientY);
+                        callBridge(text);
                         return false;
                     }, true);
 
@@ -459,6 +507,8 @@ class MainActivity : AppCompatActivity() {
                         var touch = e.touches[0];
                         startX = touch.clientX;
                         startY = touch.clientY;
+                        window.__lastTouchX = startX;
+                        window.__lastTouchY = startY;
                         isMoved = false;
 
                         if (pressTimer) clearTimeout(pressTimer);
@@ -467,50 +517,38 @@ class MainActivity : AppCompatActivity() {
                             var el = targetDoc.elementFromPoint(startX, startY);
                             if (!el) return;
 
-                            // 避开输入框、常规操作按钮等交互元素
+                            // 避开输入框与交互按钮
                             if (el.closest('input, textarea, select, [contenteditable="true"], .chat-input-widget, button, [role="button"]')) {
                                 return;
                             }
 
-                            // 优先锁定所在的 AI 消息气泡或文本块
-                            var msgContainer = el.closest('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="message"], [class*="response"]');
-                            var targetContainer = msgContainer || el.closest('table, pre, code, blockquote, li, p, h1, h2, h3, h4, h5, h6') || el;
-                            var text = (targetContainer.innerText || targetContainer.textContent || '').trim();
-                            if (!text) {
-                                var bubbles = targetDoc.querySelectorAll('.interactive-item-container, .chat-response-content, .rendered-markdown, .message-content, [class*="response"], [class*="message"]');
-                                if (bubbles.length > 0) {
-                                    text = (bubbles[bubbles.length - 1].innerText || bubbles[bubbles.length - 1].textContent || '').trim();
-                                }
-                            }
+                            var text = window.__findBestTextAtPoint(startX, startY);
                             if (text && text.length > 0) {
                                 try {
                                     var sel = (targetDoc.defaultView || window).getSelection();
                                     if (sel) sel.removeAllRanges();
                                 } catch(err) {}
-                                if (window.AndroidBridge && window.AndroidBridge.vibrate) {
-                                    window.AndroidBridge.vibrate(20);
-                                }
-                                if (window.AndroidBridge && window.AndroidBridge.openTextExtractionSheet) {
-                                    window.AndroidBridge.openTextExtractionSheet(text);
-                                }
+                                callBridge(text);
                             }
-                        }, 340);
+                        }, 360);
                     }, { passive: true });
 
                     targetDoc.addEventListener('touchmove', function(e) {
-                        if (!pressTimer) return;
                         if (!e.touches || e.touches.length !== 1) {
-                            clearTimeout(pressTimer);
-                            pressTimer = null;
+                            if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
                             return;
                         }
                         var touch = e.touches[0];
+                        window.__lastTouchX = touch.clientX;
+                        window.__lastTouchY = touch.clientY;
                         var dx = touch.clientX - startX;
                         var dy = touch.clientY - startY;
-                        if (Math.hypot(dx, dy) > 18) {
+                        if (Math.hypot(dx, dy) > 16) {
                             isMoved = true;
-                            clearTimeout(pressTimer);
-                            pressTimer = null;
+                            if (pressTimer) {
+                                clearTimeout(pressTimer);
+                                pressTimer = null;
+                            }
                         }
                     }, { passive: true });
 
@@ -803,30 +841,25 @@ class MainActivity : AppCompatActivity() {
         binding.webView.onPause()
     }
 
+    private var lastSheetOpenTime = 0L
+
     private fun initGestureDetector() {
         gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onLongPress(e: MotionEvent) {
-                // 1. 原生立即震动反馈（让用户立刻感知触感）
+                // 1. 原生立即震动反馈（触感响应）
                 vibratePhone(22)
 
-                // 2. 发送 ACTION_CANCEL 终止 WebView / Chromium 内部默认长按选区行为
-                try {
-                    val cancelEvent = MotionEvent.obtain(e.downTime, e.eventTime, MotionEvent.ACTION_CANCEL, e.x, e.y, 0)
-                    binding.webView.dispatchTouchEvent(cancelEvent)
-                    cancelEvent.recycle()
-                } catch (ex: Exception) {}
-
-                // 3. 真实屏幕密度换算（物理像素 -> 视口 CSS 像素）
+                // 2. 真实屏幕密度换算（物理像素 -> 视口 CSS 像素）
                 val density = resources.displayMetrics.density.coerceAtLeast(1f)
                 val cssX = (e.x / density).toInt()
                 val cssY = (e.y / density).toInt()
 
-                // 4. 提取命中区域文本并弹出 BottomSheet
+                // 3. 提取命中区域文本并弹出 BottomSheet（绝不 dispatch ACTION_CANCEL，防触控管道截断）
                 binding.webView.evaluateJavascript(
                     """
                     (function() {
-                        if (typeof window.__extractTextAtPoint === 'function') {
-                            return window.__extractTextAtPoint($cssX, $cssY);
+                        if (typeof window.__findBestTextAtPoint === 'function') {
+                            return window.__findBestTextAtPoint($cssX, $cssY);
                         }
                         return "";
                     })();
@@ -841,6 +874,8 @@ class MainActivity : AppCompatActivity() {
                     }
                     if (text.isNotBlank()) {
                         showTextExtractionSheet(text)
+                    } else {
+                        Toast.makeText(this@MainActivity, "长按消息内容即可选词复制", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -866,8 +901,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showTextExtractionSheet(rawText: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastSheetOpenTime < 600L) {
+            return // 600ms 防抖，杜绝双通道同时触发
+        }
         val cleanText = rawText.replace(Regex("[\\u200B\\u200C\\u200D\\uFEFF]"), "").trim()
         if (cleanText.isEmpty()) return
+        lastSheetOpenTime = now
 
         val dialog = BottomSheetDialog(this)
         val sheetBinding = DialogTextSelectBinding.inflate(layoutInflater)
