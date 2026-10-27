@@ -320,10 +320,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun injectEarlyHook(view: WebView?) {
         // 在网页加载早期立即：
-        // 1. 短路 (hover: none)，掐灭 React 20ms re-render 强杀手势
-        // 2. 原型链拦截 appendChild/insertBefore，物理阻断 Quote 气泡插入 DOM 树
+        // 1. 关闭 Quote 气泡根源开关：写入 localStorage 关闭 enable-conversation-selection-quoting
+        // 2. 短路 (hover: none)，掐灭 React 20ms re-render 强杀手势
+        // 3. 原型链拦截 appendChild/insertBefore，物理阻断 Quote 气泡插入 DOM 树
         val hookJs = """
             (function() {
+                try {
+                    var key = "jetski.developer.customFlagOverrides";
+                    var flags = {};
+                    try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
+                    if (flags["enable-conversation-selection-quoting"] !== false) {
+                        flags["enable-conversation-selection-quoting"] = false;
+                        localStorage.setItem(key, JSON.stringify(flags));
+                    }
+                } catch(e) {}
                 try {
                     if (!window.__ag_hover_shortcircuited && window.matchMedia) {
                         window.__ag_hover_shortcircuited = true;
@@ -379,6 +389,16 @@ class MainActivity : AppCompatActivity() {
     private fun injectKeepAliveAndNotificationScript(view: WebView?) {
         val js = """
             (function() {
+                // 0. 关闭 Quote 特性开关
+                try {
+                    var key = "jetski.developer.customFlagOverrides";
+                    var flags = {};
+                    try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
+                    if (flags["enable-conversation-selection-quoting"] !== false) {
+                        flags["enable-conversation-selection-quoting"] = false;
+                        localStorage.setItem(key, JSON.stringify(flags));
+                    }
+                } catch(e) {}
                 // 1. 彻底短路 (hover: none)
                 try {
                     if (!window.__ag_hover_shortcircuited && window.matchMedia) {
@@ -415,7 +435,7 @@ class MainActivity : AppCompatActivity() {
                         'text-size-adjust: 100% !important; ' +
                         '} ' +
                         '/* 彻底消灭 Quote 气泡的所有可能容器 */ ' +
-                        '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="selection-popup"], button[data-testid*="quote"], div:has(> button[data-testid*="selection-quote-button"]) { ' +
+                        '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="selection-popup"], button[data-testid*="quote"], button[data-testid*="selection-quote-button"] { ' +
                         'display: none !important; ' +
                         'visibility: hidden !important; ' +
                         'pointer-events: none !important; ' +
@@ -472,53 +492,13 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 // 4. 首字长按智能纠偏引擎：记录触控坐标，若首字长按误触整段全选，1ms 内拉回单字并呼出水滴！
-                if (!window.__ag_first_char_engine_bound) {
-                    window.__ag_first_char_engine_bound = true;
-                    window.__ag_touch_x = 0;
-                    window.__ag_touch_y = 0;
-                    window.__ag_is_touching = false;
-
-                    document.addEventListener('touchstart', function(e) {
-                        if (e.touches && e.touches.length === 1) {
-                            window.__ag_touch_x = e.touches[0].clientX;
-                            window.__ag_touch_y = e.touches[0].clientY;
-                            window.__ag_is_touching = true;
-                        }
-                    }, { passive: true, capture: true });
-
-                    document.addEventListener('touchend', function() {
-                        setTimeout(function() { window.__ag_is_touching = false; }, 400);
-                    }, { passive: true, capture: true });
-
+                // 4. Quote 斩草除根监听与首字自由选择放行（彻底移除首字限制，自由选择无阻碍）
+                if (!window.__ag_quote_cleaner_bound) {
+                    window.__ag_quote_cleaner_bound = true;
                     document.addEventListener('selectionchange', function() {
-                        // 1. 顺手清除任何可能漏掉的 Quote 气泡
                         removeQuotePopups(document);
-
-                        // 2. 首字纠偏守护
-                        var sel = window.getSelection();
-                        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
-                        
-                        // 如果在手指长按触控期间，选区被异常扩张成超过 25 字的大段（典型首字 Block 溢出症状）：
-                        var textLen = sel.toString().trim().length;
-                        if (window.__ag_is_touching && textLen > 25) {
-                            var range = sel.getRangeAt(0);
-                            // 如果选区正好从开头开始
-                            if (range.startOffset === 0 && document.caretRangeFromPoint) {
-                                var caret = document.caretRangeFromPoint(window.__ag_touch_x, window.__ag_touch_y);
-                                if (caret && caret.startContainer) {
-                                    sel.removeAllRanges();
-                                    var newR = document.createRange();
-                                    newR.setStart(caret.startContainer, caret.startOffset);
-                                    var maxLen = caret.startContainer.length || 1;
-                                    newR.setEnd(caret.startContainer, Math.min(caret.startOffset + 1, maxLen));
-                                    sel.addRange(newR);
-                                }
-                            }
-                        }
                     }, true);
                 }
-
-                // 5. 消息气泡注入“📋 复制全文”极简按钮
                 function injectMessageCopyButtons(targetDoc) {
                     if (!targetDoc) return;
                     try {
@@ -575,18 +555,13 @@ class MainActivity : AppCompatActivity() {
                         var popups = targetDoc.querySelectorAll('.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], button[data-testid*="selection-quote-button"]');
                         for (var i = 0; i < popups.length; i++) {
                             var el = popups[i];
-                            var p = el;
-                            while (p && p !== targetDoc.body && p.parentElement && (p.classList.contains('selection-popup') || p.offsetHeight < 80)) {
-                                el = p;
-                                p = p.parentElement;
-                            }
-                            if (el && el.parentNode) {
-                                el.parentNode.removeChild(el);
+                            var container = (el.closest && el.closest('.selection-popup, .selection-quote-popup')) || el;
+                            if (container && container.parentNode) {
+                                container.parentNode.removeChild(container);
                             }
                         }
                     } catch(e) {}
                 }
-
                 function injectStylesAndFixes(targetDoc) {
                     if (!targetDoc) return;
                     try {
