@@ -6,8 +6,8 @@ import android.view.ActionMode
 import android.webkit.WebView
 
 /**
- * 彻底禁用 Android 系统级 ActionMode（TYPE_FLOATING / TYPE_PRIMARY）的特制 WebView
- * 彻底斩断骑在左水滴手柄上的系统白色 Copy 药丸浮层！
+ * 物理绝杀所有 ActionMode（TYPE_FLOATING / TYPE_PRIMARY）的特制 WebView
+ * 无论系统走何种 fallback 分支，在 onActionModeStarted 即刻 finish 绝杀！
  */
 class NoActionModeWebView @JvmOverloads constructor(
     context: Context,
@@ -21,5 +21,16 @@ class NoActionModeWebView @JvmOverloads constructor(
 
     override fun startActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? {
         return null
+    }
+
+    override fun onActionModeStarted(mode: ActionMode?) {
+        super.onActionModeStarted(mode)
+        mode?.let { m ->
+            post {
+                try {
+                    m.finish()
+                } catch (e: Exception) {}
+            }
+        }
     }
 }

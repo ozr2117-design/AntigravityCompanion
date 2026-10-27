@@ -135,13 +135,20 @@ class MainActivity : AppCompatActivity() {
         updateSystemBars()
     }
 
-    // 彻底禁止 Android Window 层级弹出 TYPE_FLOATING ActionMode 浮条，杜绝白色 Copy 药丸遮挡左手柄
+    // 彻底禁止 Android Window 层级弹出 TYPE_FLOATING ActionMode 浮条，杜绝系统 Copy 药丸遮挡左手柄
     override fun onWindowStartingActionMode(callback: ActionMode.Callback?): ActionMode? {
         return null
     }
 
     override fun onWindowStartingActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? {
         return null
+    }
+
+    override fun onActionModeStarted(mode: ActionMode?) {
+        super.onActionModeStarted(mode)
+        try {
+            mode?.finish()
+        } catch (e: Exception) {}
     }
 
     private fun updateSystemBars() {
@@ -255,6 +262,19 @@ class MainActivity : AppCompatActivity() {
                 super.onPageStarted(view, url, favicon)
                 binding.progressBar.visibility = View.VISIBLE
                 injectEarlyHook(view)
+                injectKeepAliveAndNotificationScript(view)
+            }
+
+            override fun onPageCommitVisible(view: WebView?, url: String?) {
+                super.onPageCommitVisible(view, url)
+                injectEarlyHook(view)
+                injectKeepAliveAndNotificationScript(view)
+            }
+
+            override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                super.doUpdateVisitedHistory(view, url, isReload)
+                injectEarlyHook(view)
+                injectKeepAliveAndNotificationScript(view)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -303,7 +323,13 @@ class MainActivity : AppCompatActivity() {
                 binding.progressBar.progress = newProgress
                 if (newProgress >= 100) {
                     binding.progressBar.visibility = View.GONE
+                    injectKeepAliveAndNotificationScript(view)
                 }
+            }
+
+            override fun onReceivedTitle(view: WebView?, title: String?) {
+                super.onReceivedTitle(view, title)
+                injectKeepAliveAndNotificationScript(view)
             }
 
             // 处理网页中点击 "+" 选择图片/附件/媒体文件
@@ -414,7 +440,7 @@ class MainActivity : AppCompatActivity() {
         view?.evaluateJavascript(hookJs, null)
     }
 
-    private fun injectKeepAliveAndNotificationScript(view: WebView?) {
+        private fun injectKeepAliveAndNotificationScript(view: WebView?) {
         val js = """
             (function() {
                 // 0. 关闭 Quote 特性开关
@@ -427,6 +453,7 @@ class MainActivity : AppCompatActivity() {
                         localStorage.setItem(key, JSON.stringify(flags));
                     }
                 } catch(e) {}
+
                 // 1. 彻底短路 (hover: none)
                 try {
                     if (!window.__ag_hover_shortcircuited && window.matchMedia) {
@@ -450,20 +477,46 @@ class MainActivity : AppCompatActivity() {
                     }
                 } catch(e) {}
 
-                // 2. 设置网页语言为中文，唤醒 ICU 中文分词字典
+                // 2. SPA 路由全局拦截保活（针对 React Router pushState/replaceState）
+                if (!window.__ag_history_intercepted && window.history) {
+                    window.__ag_history_intercepted = true;
+                    var origPushState = history.pushState;
+                    var origReplaceState = history.replaceState;
+                    function onSpaRouteChange() {
+                        setTimeout(function() {
+                            injectStylesAndFixes(document);
+                        }, 50);
+                    }
+                    history.pushState = function() {
+                        var ret = origPushState.apply(this, arguments);
+                        onSpaRouteChange();
+                        return ret;
+                    };
+                    history.replaceState = function() {
+                        var ret = origReplaceState.apply(this, arguments);
+                        onSpaRouteChange();
+                        return ret;
+                    };
+                    window.addEventListener('popstate', onSpaRouteChange);
+                    window.addEventListener('hashchange', onSpaRouteChange);
+                }
+
+                // 3. 设置网页语言为中文，唤醒 ICU 中文分词字典
                 try {
                     document.documentElement.lang = 'zh-CN';
                     if (document.body) document.body.lang = 'zh-CN';
                 } catch(e) {}
 
-                // 3. 根治首字选择与彻底消除 Quote 气泡的高级样式
+                // 4. 行高呼吸间隙优化与彻底消除 Quote 气泡的高级样式
                 function getSelectionCSS() {
                     return 'html, body { ' +
                         '-webkit-text-size-adjust: 100% !important; ' +
                         'text-size-adjust: 100% !important; ' +
                         '} ' +
                         '/* 彻底消灭 Quote 气泡的所有可能容器 */ ' +
-                        '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="selection-popup"], button[data-testid*="quote"], button[data-testid*="selection-quote-button"] { ' +
+                        '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="selection-popup"], ' +
+                        'button[data-testid*="quote"], button[data-testid*="selection-quote-button"], [class*="quote-popup"], [class*="QuotePopup"], ' +
+                        'div[data-portal*="quote"] { ' +
                         'display: none !important; ' +
                         'visibility: hidden !important; ' +
                         'pointer-events: none !important; ' +
@@ -482,16 +535,18 @@ class MainActivity : AppCompatActivity() {
                         '-webkit-user-select: none !important; ' +
                         'pointer-events: none !important; ' +
                         '} ' +
-                        '/* 根治首字选择痛点：为段落和列表项建立内部边界保护，长按首字绝不向外逃逸触发整段全选 */ ' +
-                        '.select-text, [class*="select-text"], div[role="article"] { ' +
+                        '/* 行高呼吸间隙优化：将正文行高拉宽至 1.95，拉大水滴垂直间距，杜绝手指重叠误触 */ ' +
+                        '.select-text, [class*="select-text"], div[role="article"], .prose, article, p, li { ' +
                         '-webkit-user-select: text !important; ' +
                         'user-select: text !important; ' +
                         '-webkit-touch-callout: default !important; ' +
                         'touch-action: pan-y !important; ' +
-                        'line-height: 1.75 !important; ' +
+                        'line-height: 1.95 !important; ' +
                         'letter-spacing: 0.025em !important; ' +
+                        'word-break: break-word !important; ' +
                         '} ' +
-                        '.select-text p, .select-text li, div[role="article"] p, div[role="article"] li { ' +
+                        '.select-text p, div[role="article"] p { ' +
+                        'margin-bottom: 0.55em !important; ' +
                         'contain: inline-size !important; ' +
                         '} ' +
                         '/* 高清晰选区高亮颜色 */ ' +
@@ -505,7 +560,7 @@ class MainActivity : AppCompatActivity() {
                         '.monaco-editor .view-overlays { pointer-events: none !important; } ' +
                         'table td, table th { ' +
                         'white-space: normal !important; ' +
-                        'line-height: 1.6 !important; ' +
+                        'line-height: 1.7 !important; ' +
                         '} ' +
                         '.__ag_msg_copy_btn { ' +
                         'position: absolute; right: 8px; top: 6px; z-index: 40; ' +
@@ -519,7 +574,7 @@ class MainActivity : AppCompatActivity() {
                         '.__ag_msg_copy_btn:active { background: #e8eaed; }';
                 }
 
-                // 4. Quote 彻底灭绝与选区状态实时上报（驱动原生底部复制胶囊）
+                // 5. Quote 彻底灭绝与选区状态实时上报（驱动原生底部复制胶囊）
                 var selReportTimer = null;
                 function reportSelection() {
                     try {
@@ -543,14 +598,20 @@ class MainActivity : AppCompatActivity() {
                     } catch(e) {}
                 }
 
-                if (!window.__ag_quote_cleaner_bound) {
-                    window.__ag_quote_cleaner_bound = true;
+                if (!window.__ag_selection_reporter_bound) {
+                    window.__ag_selection_reporter_bound = true;
                     document.addEventListener('selectionchange', function() {
                         removeQuotePopups(document);
                         clearTimeout(selReportTimer);
-                        selReportTimer = setTimeout(reportSelection, 80);
+                        selReportTimer = setTimeout(reportSelection, 40);
+                    }, true);
+                    window.addEventListener('selectionchange', function() {
+                        removeQuotePopups(document);
+                        clearTimeout(selReportTimer);
+                        selReportTimer = setTimeout(reportSelection, 40);
                     }, true);
                 }
+
                 function injectMessageCopyButtons(targetDoc) {
                     if (!targetDoc) return;
                     try {
@@ -604,7 +665,7 @@ class MainActivity : AppCompatActivity() {
                 function removeQuotePopups(targetDoc) {
                     if (!targetDoc) return;
                     try {
-                        var popups = targetDoc.querySelectorAll('.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], button[data-testid*="selection-quote-button"]');
+                        var popups = targetDoc.querySelectorAll('.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="quote"], button[data-testid*="selection-quote-button"]');
                         for (var i = 0; i < popups.length; i++) {
                             var el = popups[i];
                             var container = (el.closest && el.closest('.selection-popup, .selection-quote-popup')) || el;
@@ -614,6 +675,7 @@ class MainActivity : AppCompatActivity() {
                         }
                     } catch(e) {}
                 }
+
                 function injectStylesAndFixes(targetDoc) {
                     if (!targetDoc) return;
                     try {
@@ -714,10 +776,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 };
 
+                // 高频保活心跳：每 600ms 保障样式和 Quote 清理
                 setInterval(function() {
                     window.__checkAndHandleDisconnect();
                     injectStylesAndFixes(document);
-                }, 1500);
+                }, 600);
 
                 var observer = new MutationObserver(function() {
                     window.__checkAndHandleDisconnect();
@@ -733,14 +796,13 @@ class MainActivity : AppCompatActivity() {
                         setTimeout(function() {
                             window.__checkAndHandleDisconnect();
                             injectStylesAndFixes(document);
-                        }, 300);
+                        }, 200);
                     }
                 });
             })();
         """.trimIndent()
         view?.evaluateJavascript(js, null)
     }
-
     private fun loadTargetPage() {
         // 始终加载主页地址（图2主页面），不再停留在历史对话详情页
         val targetUrl = storage.serverUrl
