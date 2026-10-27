@@ -184,11 +184,11 @@ class MainActivity : AppCompatActivity() {
             layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
             textZoom = 100
 
-            // 视口与缩放：支持双指缩放，消除 980px 强制缩小的比例漂移
-            useWideViewPort = true
-            loadWithOverviewMode = true
-            setSupportZoom(true)
-            builtInZoomControls = true
+            // 禁用破坏移动端触控映射的宽视口与缩放控件（网页自带标准移动端 viewport，保持 1:1 物理对齐）
+            useWideViewPort = false
+            loadWithOverviewMode = false
+            setSupportZoom(false)
+            builtInZoomControls = false
             displayZoomControls = false
 
             minimumFontSize = 1
@@ -197,8 +197,8 @@ class MainActivity : AppCompatActivity() {
             userAgentString = settings.userAgentString + " AntigravityCompanion/1.3"
         }
 
-        // 强制 100% 基础物理比例，消除触控消歧算法的坐标漂移
-        webView.setInitialScale(100)
+        // 保持 0（默认 1:1 视口比例），消除超高分屏下的坐标缩放偏移
+        webView.setInitialScale(0)
 
         // 启用网页内原生平滑滚动与惯性滑动
         webView.apply {
@@ -226,6 +226,7 @@ class MainActivity : AppCompatActivity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 binding.progressBar.visibility = View.VISIBLE
+                injectEarlyHook(view)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -317,39 +318,98 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun injectEarlyHook(view: WebView?) {
+        // 在网页加载早期立即短路 (hover: none)，掐灭 selectionchange 触发 React 20ms re-render 的死循环
+        val hookJs = """
+            (function() {
+                try {
+                    if (!window.__ag_hover_shortcircuited && window.matchMedia) {
+                        window.__ag_hover_shortcircuited = true;
+                        var origMatchMedia = window.matchMedia;
+                        window.matchMedia = function(q) {
+                            if (typeof q === 'string' && (q.indexOf('hover: none') !== -1 || q.indexOf('hover:none') !== -1)) {
+                                return {
+                                    matches: false,
+                                    media: q,
+                                    onchange: null,
+                                    addListener: function() {},
+                                    removeListener: function() {},
+                                    addEventListener: function() {},
+                                    removeEventListener: function() {},
+                                    dispatchEvent: function() { return false; }
+                                };
+                            }
+                            return origMatchMedia.call(window, q);
+                        };
+                    }
+                } catch(e) {}
+            })();
+        """.trimIndent()
+        view?.evaluateJavascript(hookJs, null)
+    }
+
     private fun injectKeepAliveAndNotificationScript(view: WebView?) {
         val js = """
             (function() {
+                // 1. 彻底短路 (hover: none)，掐灭 React 20ms re-render 强杀水滴光标拖拽的死循环
+                try {
+                    if (!window.__ag_hover_shortcircuited && window.matchMedia) {
+                        window.__ag_hover_shortcircuited = true;
+                        var origMatchMedia = window.matchMedia;
+                        window.matchMedia = function(q) {
+                            if (typeof q === 'string' && (q.indexOf('hover: none') !== -1 || q.indexOf('hover:none') !== -1)) {
+                                return {
+                                    matches: false,
+                                    media: q,
+                                    onchange: null,
+                                    addListener: function() {},
+                                    removeListener: function() {},
+                                    addEventListener: function() {},
+                                    removeEventListener: function() {},
+                                    dispatchEvent: function() { return false; }
+                                };
+                            }
+                            return origMatchMedia.call(window, q);
+                        };
+                    }
+                } catch(e) {}
+
                 if (window.__antigravity_companion_injected) return;
                 window.__antigravity_companion_injected = true;
 
-                // 1. 设置网页语言为中文，强制让 Chromium 唤醒 ICU 中文分词字典，彻底解决水滴光标跳跃断裂问题
+                // 2. 设置网页语言为中文，唤醒 Chromium ICU 中文分词字典
                 try {
                     document.documentElement.lang = 'zh-CN';
                     if (document.body) document.body.lang = 'zh-CN';
                 } catch(e) {}
 
-                // 2. 基础防干扰与自然选词样式
+                // 3. 极简、连续、零硬边界的自然选词与防干扰样式
                 function getSelectionCSS() {
                     return 'html, body { ' +
                         '-webkit-text-size-adjust: 100% !important; ' +
                         'text-size-adjust: 100% !important; ' +
                         '} ' +
-                        '/* 彻底屏蔽桌面端 Quote 引用气泡，决不遮挡移动端水滴光标与拖拽手势 */ ' +
-                        '.selection-popup, .selection-quote-popup, [data-testid="selection-quote-button"], [data-testid="selection-popup-quote-button"] { ' +
+                        '/* 彻底消灭桌面端 Quote 引用气泡与碰撞拦截 */ ' +
+                        '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="selection-popup-quote"] { ' +
                         'display: none !important; ' +
                         'visibility: hidden !important; ' +
                         'pointer-events: none !important; ' +
+                        'width: 0 !important; ' +
+                        'height: 0 !important; ' +
+                        'opacity: 0 !important; ' +
+                        'position: absolute !important; ' +
+                        'left: -9999px !important; ' +
                         '} ' +
-                        '/* 彻底恢复全文自然选词与光标拖拽能力，绝不人为禁用 user-select */ ' +
-                        'body, div, p, span, td, th, pre, code, li, blockquote, h1, h2, h3, h4, h5, h6, .select-text, [class*="select-text"], .scroll-mt-4 { ' +
+                        '/* 仅在消息正文容器开启 user-select，内部 span/code 自然继承，绝不设硬边界孤岛 */ ' +
+                        '.select-text, [class*="select-text"], div[role="article"] { ' +
                         '-webkit-user-select: text !important; ' +
                         'user-select: text !important; ' +
                         '-webkit-touch-callout: default !important; ' +
                         '} ' +
-                        'input, textarea, [contenteditable="true"] { ' +
-                        '-webkit-user-select: text !important; ' +
-                        'user-select: text !important; ' +
+                        '/* 避免非文本元素（按钮、头像、图标）误入选区引发全选 */ ' +
+                        'button, svg, [role="button"], .__ag_msg_copy_btn { ' +
+                        '-webkit-user-select: none !important; ' +
+                        'user-select: none !important; ' +
                         '} ' +
                         '.monaco-editor .view-overlays { pointer-events: none !important; } ' +
                         'table td, table th { ' +
@@ -368,7 +428,7 @@ class MainActivity : AppCompatActivity() {
                         '.__ag_msg_copy_btn:active { background: #e8eaed; }';
                 }
 
-                // 3. 消息气泡注入“📋 复制全文”极简按钮
+                // 4. 消息气泡注入“📋 复制全文”极简按钮
                 function injectMessageCopyButtons(targetDoc) {
                     if (!targetDoc) return;
                     try {
@@ -419,6 +479,18 @@ class MainActivity : AppCompatActivity() {
                     } catch(e) {}
                 }
 
+                function removeQuotePopups(targetDoc) {
+                    if (!targetDoc) return;
+                    try {
+                        var popups = targetDoc.querySelectorAll('.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"]');
+                        for (var i = 0; i < popups.length; i++) {
+                            if (popups[i] && popups[i].parentNode) {
+                                popups[i].parentNode.removeChild(popups[i]);
+                            }
+                        }
+                    } catch(e) {}
+                }
+
                 function injectStylesAndFixes(targetDoc) {
                     if (!targetDoc) return;
                     try {
@@ -434,6 +506,7 @@ class MainActivity : AppCompatActivity() {
                             (targetDoc.head || targetDoc.documentElement).appendChild(style);
                         }
 
+                        removeQuotePopups(targetDoc);
                         injectMessageCopyButtons(targetDoc);
 
                         var iframes = targetDoc.querySelectorAll('iframe');
@@ -451,7 +524,7 @@ class MainActivity : AppCompatActivity() {
 
                 injectStylesAndFixes(document);
 
-                // 4. 断线重连看门狗
+                // 5. 断线重连看门狗
                 function findDisconnectBanner() {
                     var keywords = ["Lost connection to the remote instance", "Lost connection", "refresh the page"];
                     var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null, false);
