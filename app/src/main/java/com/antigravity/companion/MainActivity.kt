@@ -19,6 +19,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import android.view.GestureDetector
 import android.view.MotionEvent
+import android.view.ActionMode
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.*
@@ -68,6 +69,7 @@ class MainActivity : AppCompatActivity() {
     private var twoFingerStartSpan = 0f
     private var isTwoFingerSwipeActive = false
     private var hasShownConnectToast: Boolean = false
+    private var currentSelectedText: String = ""
 
 
 
@@ -100,9 +102,15 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initWebView()
 
-        // 拦截物理返回键：优先在网页内后退
+        // 拦截物理返回键：若复制浮条可见则优先隐藏并清除选区，否则在网页内后退
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (binding.btnFloatingCopy.visibility == View.VISIBLE) {
+                    currentSelectedText = ""
+                    binding.btnFloatingCopy.visibility = View.GONE
+                    binding.webView.evaluateJavascript("window.getSelection()?.removeAllRanges();", null)
+                    return
+                }
                 if (binding.webView.canGoBack()) {
                     binding.webView.goBack()
                 } else {
@@ -125,6 +133,15 @@ class MainActivity : AppCompatActivity() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         updateSystemBars()
+    }
+
+    // 彻底禁止 Android Window 层级弹出 TYPE_FLOATING ActionMode 浮条，杜绝白色 Copy 药丸遮挡左手柄
+    override fun onWindowStartingActionMode(callback: ActionMode.Callback?): ActionMode? {
+        return null
+    }
+
+    override fun onWindowStartingActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? {
+        return null
     }
 
     private fun updateSystemBars() {
@@ -152,6 +169,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initViews() {
+        // 底部悬浮“复制已选”胶囊按钮
+        binding.btnFloatingCopy.setOnClickListener {
+            if (currentSelectedText.isNotBlank()) {
+                copyStringToClipboard(currentSelectedText, "已选文本")
+                vibratePhone(40)
+                currentSelectedText = ""
+                binding.btnFloatingCopy.visibility = View.GONE
+                binding.webView.evaluateJavascript("window.getSelection()?.removeAllRanges();", null)
+            }
+        }
+
         // 初始页面的扫码和手动配置按钮
         binding.btnScanSetup.setOnClickListener {
             startScan()
@@ -491,12 +519,36 @@ class MainActivity : AppCompatActivity() {
                         '.__ag_msg_copy_btn:active { background: #e8eaed; }';
                 }
 
-                // 4. 首字长按智能纠偏引擎：记录触控坐标，若首字长按误触整段全选，1ms 内拉回单字并呼出水滴！
-                // 4. Quote 斩草除根监听与首字自由选择放行（彻底移除首字限制，自由选择无阻碍）
+                // 4. Quote 彻底灭绝与选区状态实时上报（驱动原生底部复制胶囊）
+                var selReportTimer = null;
+                function reportSelection() {
+                    try {
+                        var sel = window.getSelection();
+                        if (!sel || sel.isCollapsed || !sel.rangeCount) {
+                            if (window.AndroidBridge && window.AndroidBridge.onSelectionCleared) {
+                                window.AndroidBridge.onSelectionCleared();
+                            }
+                            return;
+                        }
+                        var txt = sel.toString();
+                        if (txt && txt.trim().length > 0) {
+                            if (window.AndroidBridge && window.AndroidBridge.onSelectionChanged) {
+                                window.AndroidBridge.onSelectionChanged(txt);
+                            }
+                        } else {
+                            if (window.AndroidBridge && window.AndroidBridge.onSelectionCleared) {
+                                window.AndroidBridge.onSelectionCleared();
+                            }
+                        }
+                    } catch(e) {}
+                }
+
                 if (!window.__ag_quote_cleaner_bound) {
                     window.__ag_quote_cleaner_bound = true;
                     document.addEventListener('selectionchange', function() {
                         removeQuotePopups(document);
+                        clearTimeout(selReportTimer);
+                        selReportTimer = setTimeout(reportSelection, 80);
                     }, true);
                 }
                 function injectMessageCopyButtons(targetDoc) {
@@ -945,6 +997,36 @@ class MainActivity : AppCompatActivity() {
 
     // 原生与 JS 互通桥梁
     inner class WebAppInterface {
+        @JavascriptInterface
+        fun onSelectionChanged(text: String) {
+            runOnUiThread {
+                val clean = text.trim()
+                if (clean.isNotEmpty()) {
+                    currentSelectedText = clean
+                    val count = clean.length
+                    binding.btnFloatingCopy.text = "📋 复制已选 ($count 字)"
+                    if (binding.btnFloatingCopy.visibility != View.VISIBLE) {
+                        binding.btnFloatingCopy.visibility = View.VISIBLE
+                        binding.btnFloatingCopy.alpha = 0f
+                        binding.btnFloatingCopy.animate().alpha(1f).setDuration(150).start()
+                    }
+                } else {
+                    onSelectionCleared()
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun onSelectionCleared() {
+            runOnUiThread {
+                currentSelectedText = ""
+                if (binding.btnFloatingCopy.visibility == View.VISIBLE) {
+                    binding.btnFloatingCopy.animate().alpha(0f).setDuration(150).withEndAction {
+                        binding.btnFloatingCopy.visibility = View.GONE
+                    }.start()
+                }
+            }
+        }
         @JavascriptInterface
         fun postNotification(title: String, message: String) {
             notificationHelper.showMessageNotification(title, message)

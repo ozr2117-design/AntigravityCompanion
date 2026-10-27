@@ -16,12 +16,33 @@
         android:visibility="gone"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <WebView
+    <com.antigravity.companion.NoActionModeWebView
         android:id="@+id/webView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- 底部悬浮“复制已选”胶囊按钮（远离手柄，双手无障碍拖拽） -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnFloatingCopy"
+        android:layout_width="wrap_content"
+        android:layout_height="52dp"
+        android:layout_marginBottom="32dp"
+        android:text="📋 复制已选文字"
+        android:textColor="#FFFFFF"
+        android:textSize="15sp"
+        android:textStyle="bold"
+        android:paddingStart="22dp"
+        android:paddingEnd="22dp"
+        android:elevation="10dp"
+        android:visibility="gone"
+        app:cornerRadius="26dp"
+        app:backgroundTint="#1e8e3e"
+        app:rippleColor="#80FFFFFF"
+        app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
