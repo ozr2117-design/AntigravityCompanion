@@ -412,27 +412,43 @@ class MainActivity : AppCompatActivity() {
                     // 物理绝杀：拦截 Node.prototype.appendChild 和 insertBefore，彻底杜绝 Quote 气泡进入 DOM
                     if (!window.__ag_dom_hooked && window.Node) {
                         window.__ag_dom_hooked = true;
-                        function isQuoteNode(node) {
+                        function isQuoteOrContextMenuNode(node) {
                             if (!node || node.nodeType !== 1) return false;
                             var cls = node.className || '';
-                            if (typeof cls === 'string' && (cls.indexOf('selection-popup') !== -1 || cls.indexOf('selection-quote') !== -1)) return true;
+                            if (typeof cls === 'string' && (cls.indexOf('selection-popup') !== -1 || cls.indexOf('selection-quote') !== -1 || cls.indexOf('context-menu') !== -1)) return true;
                             var tid = node.getAttribute ? (node.getAttribute('data-testid') || '') : '';
-                            if (tid.indexOf('quote') !== -1) return true;
-                            if (node.querySelector && node.querySelector('[data-testid*="quote"], .selection-quote-popup')) return true;
+                            if (tid.indexOf('quote') !== -1 || tid.indexOf('context-menu') !== -1) return true;
+                            var role = node.getAttribute ? (node.getAttribute('role') || '') : '';
+                            if (role === 'menu') return true;
+                            var id = node.id || '';
+                            if (id.indexOf('base-ui-') !== -1) return true;
+                            if (node.querySelector && node.querySelector('[data-testid*="quote"], [data-testid*="context-menu"], [role="menu"], [id^="base-ui-"], .selection-quote-popup')) return true;
                             return false;
                         }
 
                         var origAppend = Node.prototype.appendChild;
                         Node.prototype.appendChild = function(child) {
-                            if (isQuoteNode(child)) return child;
+                            if (isQuoteOrContextMenuNode(child)) return child;
                             return origAppend.apply(this, arguments);
                         };
 
                         var origInsert = Node.prototype.insertBefore;
                         Node.prototype.insertBefore = function(newNode, refNode) {
-                            if (isQuoteNode(newNode)) return newNode;
+                            if (isQuoteOrContextMenuNode(newNode)) return newNode;
                             return origInsert.apply(this, arguments);
                         };
+                    }
+
+                    if (!window.__ag_contextmenu_blocked) {
+                        window.__ag_contextmenu_blocked = true;
+                        function blockContextMenu(e) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.stopImmediatePropagation();
+                            return false;
+                        }
+                        window.addEventListener('contextmenu', blockContextMenu, true);
+                        document.addEventListener('contextmenu', blockContextMenu, true);
                     }
                 } catch(e) {}
             })();
@@ -515,6 +531,7 @@ class MainActivity : AppCompatActivity() {
                         '} ' +
                         '/* 彻底消灭 Quote 气泡的所有可能容器 */ ' +
                         '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="selection-popup"], ' +
+                        '[data-testid*="context-menu"], [role="menu"], [id^="base-ui-"], [class*="context-menu"], [class*="ContextMenu"], ' +
                         'button[data-testid*="quote"], button[data-testid*="selection-quote-button"], [class*="quote-popup"], [class*="QuotePopup"], ' +
                         'div[data-portal*="quote"] { ' +
                         'display: none !important; ' +
@@ -665,15 +682,27 @@ class MainActivity : AppCompatActivity() {
                 function removeQuotePopups(targetDoc) {
                     if (!targetDoc) return;
                     try {
-                        var popups = targetDoc.querySelectorAll('.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="quote"], button[data-testid*="selection-quote-button"]');
+                        var popups = targetDoc.querySelectorAll('.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="quote"], [data-testid*="context-menu"], [role="menu"], [class*="context-menu"], [id^="base-ui-"], button[data-testid*="selection-quote-button"]');
                         for (var i = 0; i < popups.length; i++) {
                             var el = popups[i];
-                            var container = (el.closest && el.closest('.selection-popup, .selection-quote-popup')) || el;
+                            var container = (el.closest && el.closest('.selection-popup, .selection-quote-popup, [data-testid*="context-menu"], [role="menu"]')) || el;
                             if (container && container.parentNode) {
                                 container.parentNode.removeChild(container);
                             }
                         }
                     } catch(e) {}
+                }
+
+                if (!window.__ag_contextmenu_blocked) {
+                    window.__ag_contextmenu_blocked = true;
+                    function blockContextMenu(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        return false;
+                    }
+                    window.addEventListener('contextmenu', blockContextMenu, true);
+                    document.addEventListener('contextmenu', blockContextMenu, true);
                 }
 
                 function injectStylesAndFixes(targetDoc) {
