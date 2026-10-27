@@ -319,7 +319,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun injectEarlyHook(view: WebView?) {
-        // 在网页加载早期立即短路 (hover: none)，掐灭 selectionchange 触发 React 20ms re-render 的死循环
+        // 在网页加载早期立即：
+        // 1. 短路 (hover: none)，掐灭 React 20ms re-render 强杀手势
+        // 2. 原型链拦截 appendChild/insertBefore，物理阻断 Quote 气泡插入 DOM 树
         val hookJs = """
             (function() {
                 try {
@@ -342,6 +344,32 @@ class MainActivity : AppCompatActivity() {
                             return origMatchMedia.call(window, q);
                         };
                     }
+
+                    // 物理绝杀：拦截 Node.prototype.appendChild 和 insertBefore，彻底杜绝 Quote 气泡进入 DOM
+                    if (!window.__ag_dom_hooked && window.Node) {
+                        window.__ag_dom_hooked = true;
+                        function isQuoteNode(node) {
+                            if (!node || node.nodeType !== 1) return false;
+                            var cls = node.className || '';
+                            if (typeof cls === 'string' && (cls.indexOf('selection-popup') !== -1 || cls.indexOf('selection-quote') !== -1)) return true;
+                            var tid = node.getAttribute ? (node.getAttribute('data-testid') || '') : '';
+                            if (tid.indexOf('quote') !== -1) return true;
+                            if (node.querySelector && node.querySelector('[data-testid*="quote"], .selection-quote-popup')) return true;
+                            return false;
+                        }
+
+                        var origAppend = Node.prototype.appendChild;
+                        Node.prototype.appendChild = function(child) {
+                            if (isQuoteNode(child)) return child;
+                            return origAppend.apply(this, arguments);
+                        };
+
+                        var origInsert = Node.prototype.insertBefore;
+                        Node.prototype.insertBefore = function(newNode, refNode) {
+                            if (isQuoteNode(newNode)) return newNode;
+                            return origInsert.apply(this, arguments);
+                        };
+                    }
                 } catch(e) {}
             })();
         """.trimIndent()
@@ -351,7 +379,7 @@ class MainActivity : AppCompatActivity() {
     private fun injectKeepAliveAndNotificationScript(view: WebView?) {
         val js = """
             (function() {
-                // 1. 彻底短路 (hover: none)，掐灭 React 20ms re-render 强杀水滴光标拖拽的死循环
+                // 1. 彻底短路 (hover: none)
                 try {
                     if (!window.__ag_hover_shortcircuited && window.matchMedia) {
                         window.__ag_hover_shortcircuited = true;
@@ -374,22 +402,19 @@ class MainActivity : AppCompatActivity() {
                     }
                 } catch(e) {}
 
-                if (window.__antigravity_companion_injected) return;
-                window.__antigravity_companion_injected = true;
-
-                // 2. 设置网页语言为中文，唤醒 Chromium ICU 中文分词字典
+                // 2. 设置网页语言为中文，唤醒 ICU 中文分词字典
                 try {
                     document.documentElement.lang = 'zh-CN';
                     if (document.body) document.body.lang = 'zh-CN';
                 } catch(e) {}
 
-                // 3. 极简、连续、高跟手度、零硬边界的自然选词样式
+                // 3. 根治首字选择与彻底消除 Quote 气泡的高级样式
                 function getSelectionCSS() {
                     return 'html, body { ' +
                         '-webkit-text-size-adjust: 100% !important; ' +
                         'text-size-adjust: 100% !important; ' +
                         '} ' +
-                        '/* 彻底、多层级物理消灭桌面端 Quote 气泡 */ ' +
+                        '/* 彻底消灭 Quote 气泡的所有可能容器 */ ' +
                         '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="selection-popup"], button[data-testid*="quote"], div:has(> button[data-testid*="selection-quote-button"]) { ' +
                         'display: none !important; ' +
                         'visibility: hidden !important; ' +
@@ -401,9 +426,15 @@ class MainActivity : AppCompatActivity() {
                         'top: -9999px !important; ' +
                         'left: -9999px !important; ' +
                         'transform: scale(0) !important; ' +
-                        'z-index: -9999 !important; ' +
+                        'z-index: -99999 !important; ' +
                         '} ' +
-                        '/* 极致跟手度与高精度排版：舒适行高防止手指上下抖动跳行，微字距防止选词粘连 */ ' +
+                        '/* 根治首字选择痛点：列表标记符号彻底禁止参与长按命中，防止首字误抓到圆点导致全选 */ ' +
+                        'li::marker, ul > li::before, ol > li::before { ' +
+                        'user-select: none !important; ' +
+                        '-webkit-user-select: none !important; ' +
+                        'pointer-events: none !important; ' +
+                        '} ' +
+                        '/* 根治首字选择痛点：为段落和列表项建立内部边界保护，长按首字绝不向外逃逸触发整段全选 */ ' +
                         '.select-text, [class*="select-text"], div[role="article"] { ' +
                         '-webkit-user-select: text !important; ' +
                         'user-select: text !important; ' +
@@ -412,7 +443,10 @@ class MainActivity : AppCompatActivity() {
                         'line-height: 1.75 !important; ' +
                         'letter-spacing: 0.025em !important; ' +
                         '} ' +
-                        '/* 高清晰选区高亮颜色，手指遮挡下也能看清当前光标位置 */ ' +
+                        '.select-text p, .select-text li, div[role="article"] p, div[role="article"] li { ' +
+                        'contain: inline-size !important; ' +
+                        '} ' +
+                        '/* 高清晰选区高亮颜色 */ ' +
                         '::selection { background: rgba(30, 142, 62, 0.28) !important; color: inherit !important; } ' +
                         '::-webkit-selection { background: rgba(30, 142, 62, 0.28) !important; color: inherit !important; } ' +
                         '/* 避免非文本元素（按钮、头像、图标）误入选区引发全选 */ ' +
@@ -437,7 +471,54 @@ class MainActivity : AppCompatActivity() {
                         '.__ag_msg_copy_btn:active { background: #e8eaed; }';
                 }
 
-                // 4. 消息气泡注入“📋 复制全文”极简按钮
+                // 4. 首字长按智能纠偏引擎：记录触控坐标，若首字长按误触整段全选，1ms 内拉回单字并呼出水滴！
+                if (!window.__ag_first_char_engine_bound) {
+                    window.__ag_first_char_engine_bound = true;
+                    window.__ag_touch_x = 0;
+                    window.__ag_touch_y = 0;
+                    window.__ag_is_touching = false;
+
+                    document.addEventListener('touchstart', function(e) {
+                        if (e.touches && e.touches.length === 1) {
+                            window.__ag_touch_x = e.touches[0].clientX;
+                            window.__ag_touch_y = e.touches[0].clientY;
+                            window.__ag_is_touching = true;
+                        }
+                    }, { passive: true, capture: true });
+
+                    document.addEventListener('touchend', function() {
+                        setTimeout(function() { window.__ag_is_touching = false; }, 400);
+                    }, { passive: true, capture: true });
+
+                    document.addEventListener('selectionchange', function() {
+                        // 1. 顺手清除任何可能漏掉的 Quote 气泡
+                        removeQuotePopups(document);
+
+                        // 2. 首字纠偏守护
+                        var sel = window.getSelection();
+                        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+                        
+                        // 如果在手指长按触控期间，选区被异常扩张成超过 25 字的大段（典型首字 Block 溢出症状）：
+                        var textLen = sel.toString().trim().length;
+                        if (window.__ag_is_touching && textLen > 25) {
+                            var range = sel.getRangeAt(0);
+                            // 如果选区正好从开头开始
+                            if (range.startOffset === 0 && document.caretRangeFromPoint) {
+                                var caret = document.caretRangeFromPoint(window.__ag_touch_x, window.__ag_touch_y);
+                                if (caret && caret.startContainer) {
+                                    sel.removeAllRanges();
+                                    var newR = document.createRange();
+                                    newR.setStart(caret.startContainer, caret.startOffset);
+                                    var maxLen = caret.startContainer.length || 1;
+                                    newR.setEnd(caret.startContainer, Math.min(caret.startOffset + 1, maxLen));
+                                    sel.addRange(newR);
+                                }
+                            }
+                        }
+                    }, true);
+                }
+
+                // 5. 消息气泡注入“📋 复制全文”极简按钮
                 function injectMessageCopyButtons(targetDoc) {
                     if (!targetDoc) return;
                     try {
@@ -506,11 +587,6 @@ class MainActivity : AppCompatActivity() {
                     } catch(e) {}
                 }
 
-                // 随时猎杀新冒出的 Quote 气泡
-                document.addEventListener('selectionchange', function() {
-                    removeQuotePopups(document);
-                }, true);
-
                 function injectStylesAndFixes(targetDoc) {
                     if (!targetDoc) return;
                     try {
@@ -518,13 +594,14 @@ class MainActivity : AppCompatActivity() {
                         if (targetDoc.body) targetDoc.body.lang = 'zh-CN';
 
                         var styleId = '__ag_precision_selection_style';
-                        if (!targetDoc.getElementById(styleId)) {
-                            var style = targetDoc.createElement('style');
-                            style.id = styleId;
-                            style.type = 'text/css';
-                            style.innerHTML = getSelectionCSS();
-                            (targetDoc.head || targetDoc.documentElement).appendChild(style);
+                        var styleEl = targetDoc.getElementById(styleId);
+                        if (!styleEl) {
+                            styleEl = targetDoc.createElement('style');
+                            styleEl.id = styleId;
+                            styleEl.type = 'text/css';
+                            (targetDoc.head || targetDoc.documentElement).appendChild(styleEl);
                         }
+                        styleEl.innerHTML = getSelectionCSS();
 
                         removeQuotePopups(targetDoc);
                         injectMessageCopyButtons(targetDoc);
@@ -544,7 +621,7 @@ class MainActivity : AppCompatActivity() {
 
                 injectStylesAndFixes(document);
 
-                // 5. 断线重连看门狗
+                // 6. 断线重连看门狗
                 function findDisconnectBanner() {
                     var keywords = ["Lost connection to the remote instance", "Lost connection", "refresh the page"];
                     var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null, false);
