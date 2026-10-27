@@ -41,8 +41,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
     private lateinit var storage: StorageManager
     private lateinit var notificationHelper: NotificationHelper
-    private lateinit var gestureDetector: GestureDetector
-
+    
     // 文件与媒体上传回调
     private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
 
@@ -98,7 +97,6 @@ class MainActivity : AppCompatActivity() {
 
         updateSystemBars()
         checkPermissions()
-        initGestureDetector()
         initViews()
         initWebView()
 
@@ -215,14 +213,10 @@ class MainActivity : AppCompatActivity() {
 
             WebView.setWebContentsDebuggingEnabled(true)
 
-            // 由原生 GestureDetector 全权接管长按，彻底杜绝 View 层的事件冲突与 ACTION_CANCEL
-            isLongClickable = false
+            // 彻底恢复原生长按选词与水滴拖拽机制，决不人为拦截触控事件
+            isLongClickable = true
             setOnLongClickListener(null)
-
-            setOnTouchListener { _, event ->
-                gestureDetector.onTouchEvent(event)
-                false // 保持 false，保证网页正常平滑滚动与点击绝不受阻
-            }
+            setOnTouchListener(null)
         }
 
         // 注入原生 JS 接口桥梁
@@ -329,325 +323,108 @@ class MainActivity : AppCompatActivity() {
                 if (window.__antigravity_companion_injected) return;
                 window.__antigravity_companion_injected = true;
 
-                // 1. 基础穿透与防干扰样式：彻底移除导致选区穿透的全局 user-select: text，禁用原生误吸附
+                // 1. 设置网页语言为中文，强制让 Chromium 唤醒 ICU 中文分词字典，彻底解决水滴光标跳跃断裂问题
+                try {
+                    document.documentElement.lang = 'zh-CN';
+                    if (document.body) document.body.lang = 'zh-CN';
+                } catch(e) {}
+
+                // 2. 基础防干扰与自然选词样式
                 function getSelectionCSS() {
                     return 'html, body { ' +
                         '-webkit-text-size-adjust: 100% !important; ' +
                         'text-size-adjust: 100% !important; ' +
                         '} ' +
-                        'body, div, p, span, td, th, pre, code, li, blockquote, h1, h2, h3, h4, h5, h6 { ' +
-                        '-webkit-touch-callout: none !important; ' +
+                        '/* 彻底屏蔽桌面端 Quote 引用气泡，决不遮挡移动端水滴光标与拖拽手势 */ ' +
+                        '.selection-popup, .selection-quote-popup, [data-testid="selection-quote-button"], [data-testid="selection-popup-quote-button"] { ' +
+                        'display: none !important; ' +
+                        'visibility: hidden !important; ' +
+                        'pointer-events: none !important; ' +
+                        '} ' +
+                        '/* 彻底恢复全文自然选词与光标拖拽能力，绝不人为禁用 user-select */ ' +
+                        'body, div, p, span, td, th, pre, code, li, blockquote, h1, h2, h3, h4, h5, h6, .select-text, [class*="select-text"], .scroll-mt-4 { ' +
+                        '-webkit-user-select: text !important; ' +
+                        'user-select: text !important; ' +
+                        '-webkit-touch-callout: default !important; ' +
+                        '} ' +
+                        'input, textarea, [contenteditable="true"] { ' +
+                        '-webkit-user-select: text !important; ' +
+                        'user-select: text !important; ' +
                         '} ' +
                         '.monaco-editor .view-overlays { pointer-events: none !important; } ' +
                         'table td, table th { ' +
                         'white-space: normal !important; ' +
                         'line-height: 1.5 !important; ' +
                         '} ' +
-                        'input, textarea, [contenteditable="true"] { ' +
-                        '-webkit-user-select: text !important; ' +
-                        'user-select: text !important; ' +
+                        '.__ag_msg_copy_btn { ' +
+                        'position: absolute; right: 8px; top: 6px; z-index: 40; ' +
+                        'font-size: 11px; color: #5f6368; background: rgba(245, 245, 247, 0.92); ' +
+                        'border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 6px; padding: 2px 7px; ' +
+                        'cursor: pointer; display: inline-flex; align-items: center; gap: 3px; ' +
+                        'backdrop-filter: blur(4px); box-shadow: 0 1px 2px rgba(0,0,0,0.06); ' +
+                        'opacity: 0.85; transition: opacity 0.2s, background 0.2s; ' +
+                        'user-select: none !important; -webkit-user-select: none !important; ' +
                         '} ' +
-                        '/* 彻底绝杀桌面端 Quote 气泡与 Chromium 网页内病态跨块大蓝块 */ ' +
-                        '.selection-popup, .selection-quote-popup, [data-testid="selection-quote-button"], [data-testid="selection-popup-quote-button"] { ' +
-                        'display: none !important; ' +
-                        'visibility: hidden !important; ' +
-                        'pointer-events: none !important; ' +
-                        '} ' +
-                        '.select-text, [class*="select-text"], .scroll-mt-4 { ' +
-                        '-webkit-touch-callout: none !important; ' +
-                        '-webkit-user-select: none !important; ' +
-                        'user-select: none !important; ' +
-                        '}';
+                        '.__ag_msg_copy_btn:active { background: #e8eaed; }';
                 }
-                // 记录最近一次触控屏幕坐标（视口 CSS 像素）
-                window.__lastTouchX = 0;
-                window.__lastTouchY = 0;
 
-                // 全局高精度文本探测器（过滤浮动提示框、穿透桌面浮层，精准锚定消息正文）
-                window.__findBestTextAtPoint = function(x, y) {
-                    // 优先使用真实触控事件记录的高精度 CSS 视口坐标（彻底规避 density 与状态栏换算误差）
-                    var localX = (window.__lastTouchX > 0) ? window.__lastTouchX : ((x !== undefined && x !== null && x > 0) ? x : 0);
-                    var localY = (window.__lastTouchY > 0) ? window.__lastTouchY : ((y !== undefined && y !== null && y > 0) ? y : 0);
+                // 3. 消息气泡注入“📋 复制全文”极简按钮
+                function injectMessageCopyButtons(targetDoc) {
+                    if (!targetDoc) return;
+                    try {
+                        var messageRows = targetDoc.querySelectorAll('.scroll-mt-4, [class*="scroll-mt"], [data-testid*="step"], div[role="article"]');
+                        for (var i = 0; i < messageRows.length; i++) {
+                            var row = messageRows[i];
+                            if (row.__ag_copy_btn_injected) continue;
 
-                    function clearSel(doc) {
-                        try {
-                            var sel = (doc.defaultView || window).getSelection();
-                            if (sel) sel.removeAllRanges();
-                        } catch(e) {}
-                    }
+                            var content = row.querySelector('.select-text, [class*="select-text"], div.whitespace-pre-wrap');
+                            if (!content) continue;
 
-                    function isSpuriousAction(txt) {
-                        if (!txt) return true;
-                        if (txt.length > 25) return false;
-                        var low = txt.toLowerCase().trim();
-                        return low === 'feedback' || low === 'copy' || low === 'good response' || 
-                               low === 'bad response' || low === 'like' || low === 'dislike' || 
-                               low === 'retry' || low === 'share' || low === 'quote';
-                    }
-
-                    function extractValidMessageFromElement(el) {
-                        if (!el) return "";
-                        // 1. 严格过滤浮动提示框（Radix Popper / Tooltip Portal）与输入组件
-                        if (el.closest('[role="tooltip"], [data-radix-popper-content-wrapper], [data-radix-portal], [data-floating-ui-portal], [class*="tooltip"], [id*="tooltip"]')) {
-                            return "";
-                        }
-                        if (el.closest('input, textarea, select, [contenteditable="true"], .chat-input-widget')) {
-                            return "";
-                        }
-
-                        // 2. 优先命中核心正文排版容器
-                        var selectText = el.closest('.select-text, [class*="select-text"]');
-                        if (selectText) {
-                            var txt = (selectText.innerText || selectText.textContent || '').trim();
-                            if (txt.length > 0 && !isSpuriousAction(txt)) return txt;
-                        }
-
-                        // 3. 优先命中独立代码块
-                        var codeBlock = el.closest('div[class*="code-block"], pre');
-                        if (codeBlock) {
-                            var ctxt = (codeBlock.innerText || codeBlock.textContent || '').trim();
-                            if (ctxt.length > 0 && !isSpuriousAction(ctxt)) return ctxt;
-                        }
-
-                        // 4. 优先命中用户输入引用气泡
-                        var userQuotable = el.closest('[data-quotable="true"], div.whitespace-pre-wrap');
-                        if (userQuotable) {
-                            var qtxt = (userQuotable.innerText || userQuotable.textContent || '').trim();
-                            if (qtxt.length > 0 && !isSpuriousAction(qtxt)) return qtxt;
-                        }
-
-                        // 5. 命中消息行外壳（当点击到底部时间戳、操作按钮栏或外壳留白时，向上锚定整条消息正文）
-                        var row = el.closest('.scroll-mt-4, [class*="scroll-mt"], [data-testid*="step"], div[role="article"], div.flex.items-start, div.flex.items-end');
-                        if (row) {
-                            var content = row.querySelector('.select-text, [class*="select-text"]');
-                            if (content) {
-                                var c = (content.innerText || content.textContent || '').trim();
-                                if (c.length > 0 && !isSpuriousAction(c)) return c;
+                            row.__ag_copy_btn_injected = true;
+                            if (getComputedStyle(row).position === 'static') {
+                                row.style.position = 'relative';
                             }
-                            var prompt = row.querySelector('[data-quotable="true"], div.whitespace-pre-wrap, [class*="bg-card"]');
-                            if (prompt) {
-                                var p = (prompt.innerText || prompt.textContent || '').trim();
-                                if (p.length > 0 && !isSpuriousAction(p)) return p;
-                            }
-                            var cb = row.querySelector('div[class*="code-block"], pre');
-                            if (cb) {
-                                var code = (cb.innerText || cb.textContent || '').trim();
-                                if (code.length > 0 && !isSpuriousAction(code)) return code;
-                            }
-                            var clone = row.cloneNode(true);
-                            var buttons = clone.querySelectorAll('button, [role="button"], svg, .flex.items-center.gap-1');
-                            buttons.forEach(function(b) {
-                                if (b && b.parentElement) b.parentElement.removeChild(b);
-                            });
-                            var fallbackTxt = (clone.innerText || clone.textContent || '').trim();
-                            if (fallbackTxt.length > 0 && !isSpuriousAction(fallbackTxt)) return fallbackTxt;
-                        }
 
-                        // 6. 向上逐级溯源通用文本块
-                        var cur = el;
-                        while (cur && cur !== document.body && cur !== document.documentElement) {
-                            if (cur.matches && cur.matches('.select-text, [class*="select-text"], .scroll-mt-4, [class*="scroll-mt"], div.whitespace-pre-wrap, article, section, p, blockquote, li, ol, ul')) {
-                                var gt = (cur.innerText || cur.textContent || '').trim();
-                                if (gt.length > 0 && gt.length < 50000 && !isSpuriousAction(gt)) return gt;
-                            }
-                            cur = cur.parentElement;
-                        }
+                            var btn = targetDoc.createElement('button');
+                            btn.className = '__ag_msg_copy_btn';
+                            btn.setAttribute('type', 'button');
+                            btn.innerHTML = '📋 复制全文';
 
-                        return "";
-                    }
-
-                    function probeDoc(doc, probeX, probeY) {
-                        if (!doc) return "";
-                        clearSel(doc);
-
-                        // 放射性多点探测（半径 40px 内 13 个探测点，彻底杜绝内边距/行间距落空）
-                        var probes = [
-                            [0, 0], [0, -15], [0, 15], [-15, 0], [15, 0],
-                            [-25, -25], [25, 25], [-25, 25], [25, -25],
-                            [0, -40], [0, 40], [-40, 0], [40, 0]
-                        ];
-                        for (var p = 0; p < probes.length; p++) {
-                            var px = probeX + probes[p][0];
-                            var py = probeY + probes[p][1];
-                            var c = doc.elementFromPoint(px, py);
-                            if (c) {
-                                if (c.tagName === 'IFRAME') {
-                                    try {
-                                        var iframeDoc = c.contentDocument || (c.contentWindow && c.contentWindow.document);
-                                        if (iframeDoc) {
-                                            var r = c.getBoundingClientRect();
-                                            var sub = probeDoc(iframeDoc, px - r.left, py - r.top);
-                                            if (sub) return sub;
+                            (function(targetRow, copyBtn) {
+                                copyBtn.addEventListener('click', function(ev) {
+                                    ev.preventDefault();
+                                    ev.stopPropagation();
+                                    var clone = targetRow.cloneNode(true);
+                                    var btns = clone.querySelectorAll('button, [role="button"], svg, .__ag_msg_copy_btn');
+                                    btns.forEach(function(b) { if (b && b.parentElement) b.parentElement.removeChild(b); });
+                                    var txt = (clone.innerText || clone.textContent || '').trim();
+                                    if (txt) {
+                                        if (window.AndroidBridge && window.AndroidBridge.copyToClipboard) {
+                                            window.AndroidBridge.copyToClipboard(txt);
+                                        } else if (navigator.clipboard) {
+                                            navigator.clipboard.writeText(txt);
                                         }
-                                    } catch (e) {}
-                                }
-                                // 若命中浮层/提示框，穿透探视其下方真实正文
-                                if (c.closest && c.closest('[role="tooltip"], .selection-popup, .selection-quote-popup, [data-radix-portal], [data-radix-popper-content-wrapper]')) {
-                                    var origPE = c.style.pointerEvents;
-                                    c.style.pointerEvents = 'none';
-                                    var under = doc.elementFromPoint(px, py);
-                                    c.style.pointerEvents = origPE;
-                                    if (under) c = under;
-                                }
-                                var t = extractValidMessageFromElement(c);
-                                if (t && t.length > 0) return t;
-                            }
-                        }
-                        return "";
-                    }
-
-                    var result = probeDoc(document, localX, localY);
-                    if (!result) {
-                        // 全局兜底：优先匹配触碰点垂直范围所在的消息气泡，次选垂直距离最近者
-                        try {
-                            var allBubbles = document.querySelectorAll('.select-text, [class*="select-text"], div.whitespace-pre-wrap, .scroll-mt-4');
-                            var best = null;
-                            var bestDist = Infinity;
-                            for (var i = 0; i < allBubbles.length; i++) {
-                                var b = allBubbles[i];
-                                if (b.closest('[role="tooltip"], [data-radix-portal], [data-radix-popper-content-wrapper]')) continue;
-                                var rect = b.getBoundingClientRect();
-                                if (rect.height === 0 || rect.width === 0) continue;
-                                // 黄金准则：如果触摸坐标直接落在该气泡的上下边界内，直接判定命中当前气泡！
-                                if (localY >= rect.top && localY <= rect.bottom) {
-                                    var textInside = extractValidMessageFromElement(b);
-                                    if (textInside && textInside.length > 0) {
-                                        best = b;
-                                        break;
+                                        copyBtn.innerHTML = '✅ 已复制';
+                                        copyBtn.style.color = '#1e8e3e';
+                                        setTimeout(function() {
+                                            copyBtn.innerHTML = '📋 复制全文';
+                                            copyBtn.style.color = '#5f6368';
+                                        }, 1800);
                                     }
-                                }
-                                var dist = Math.abs((rect.top + rect.height / 2) - localY);
-                                if (dist < bestDist) {
-                                    bestDist = dist;
-                                    best = b;
-                                }
-                            }
-                            if (best) {
-                                result = extractValidMessageFromElement(best);
-                            }
-                        } catch(e) {}
-                    }
-                    clearSel(document);
-                    return result || "";
-                };
+                                });
+                            })(row, btn);
 
-                // 保持兼容旧方法别名
-                window.__extractTextAtPoint = window.__findBestTextAtPoint;
-
-                // 2. 原生纯文本提取器：长按消息气泡唤出 Android 原生 BottomSheet 逐字自由选词
-                function initSmartTextExtractor(targetDoc) {
-                    if (!targetDoc || targetDoc.__ag_extractor_injected) return;
-                    targetDoc.__ag_extractor_injected = true;
-
-                    function callBridge(text) {
-                        if (!text || text.length === 0) return;
-                        var bridge = window.AndroidBridge || (window.top && window.top.AndroidBridge);
-                        if (bridge) {
-                            if (bridge.vibrate) bridge.vibrate(22);
-                            if (bridge.openTextExtractionSheet) bridge.openTextExtractionSheet(text);
+                            row.appendChild(btn);
                         }
-                    }
-
-                    // 核心防御：拦截 Chromium 移动端长按上下文菜单事件，就地扼杀 Chrome 原生选区抢跑
-                    targetDoc.addEventListener('contextmenu', function(e) {
-                        var el = e.target;
-                        if (!el) return;
-                        if (el.closest('input, textarea, select, [contenteditable="true"]')) {
-                            return;
-                        }
-                        e.preventDefault();
-                        e.stopPropagation();
-
-                        try {
-                            var sel = (targetDoc.defaultView || window).getSelection();
-                            if (sel) sel.removeAllRanges();
-                        } catch(err) {}
-
-                        var text = window.__findBestTextAtPoint(e.clientX, e.clientY);
-                        callBridge(text);
-                        return false;
-                    }, true);
-
-                    var pressTimer = null;
-                    var startX = 0;
-                    var startY = 0;
-                    var isMoved = false;
-
-                    targetDoc.addEventListener('touchstart', function(e) {
-                        if (!e.touches || e.touches.length !== 1) {
-                            if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-                            return;
-                        }
-                        var touch = e.touches[0];
-                        startX = touch.clientX;
-                        startY = touch.clientY;
-                        window.__lastTouchX = startX;
-                        window.__lastTouchY = startY;
-                        isMoved = false;
-
-                        if (pressTimer) clearTimeout(pressTimer);
-                        pressTimer = setTimeout(function() {
-                            if (isMoved) return;
-                            var el = targetDoc.elementFromPoint(startX, startY);
-                            if (!el) return;
-
-                            // 避开输入框与非消息行内部的交互按钮
-                            if (el.closest('input, textarea, select, [contenteditable="true"], .chat-input-widget')) {
-                                return;
-                            }
-                            // 消息外壳之外的普通操作按钮不触发选词
-                            if (el.closest('button, [role="button"]') && !el.closest('.scroll-mt-4, [class*="scroll-mt"], [data-testid*="step"]')) {
-                                return;
-                            }
-
-                            var text = window.__findBestTextAtPoint(startX, startY);
-                            if (text && text.length > 0) {
-                                try {
-                                    var sel = (targetDoc.defaultView || window).getSelection();
-                                    if (sel) sel.removeAllRanges();
-                                } catch(err) {}
-                                callBridge(text);
-                            }
-                        }, 360);
-                    }, { passive: true });
-
-                    targetDoc.addEventListener('touchmove', function(e) {
-                        if (!e.touches || e.touches.length !== 1) {
-                            if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-                            return;
-                        }
-                        var touch = e.touches[0];
-                        window.__lastTouchX = touch.clientX;
-                        window.__lastTouchY = touch.clientY;
-                        var dx = touch.clientX - startX;
-                        var dy = touch.clientY - startY;
-                        if (Math.hypot(dx, dy) > 16) {
-                            isMoved = true;
-                            if (pressTimer) {
-                                clearTimeout(pressTimer);
-                                pressTimer = null;
-                            }
-                        }
-                    }, { passive: true });
-
-                    targetDoc.addEventListener('touchend', function() {
-                        if (pressTimer) {
-                            clearTimeout(pressTimer);
-                            pressTimer = null;
-                        }
-                    }, { passive: true });
-
-                    targetDoc.addEventListener('touchcancel', function() {
-                        if (pressTimer) {
-                            clearTimeout(pressTimer);
-                            pressTimer = null;
-                        }
-                    }, { passive: true });
+                    } catch(e) {}
                 }
 
                 function injectStylesAndFixes(targetDoc) {
                     if (!targetDoc) return;
                     try {
+                        targetDoc.documentElement.lang = 'zh-CN';
+                        if (targetDoc.body) targetDoc.body.lang = 'zh-CN';
+
                         var styleId = '__ag_precision_selection_style';
                         if (!targetDoc.getElementById(styleId)) {
                             var style = targetDoc.createElement('style');
@@ -656,43 +433,9 @@ class MainActivity : AppCompatActivity() {
                             style.innerHTML = getSelectionCSS();
                             (targetDoc.head || targetDoc.documentElement).appendChild(style);
                         }
-                        if (targetDoc.body) {
-                            if (targetDoc.body.onselectstart) targetDoc.body.onselectstart = null;
-                            if (targetDoc.body.oncontextmenu) targetDoc.body.oncontextmenu = null;
-                        }
-                        var viewport = targetDoc.querySelector('meta[name="viewport"]');
-                        if (!viewport && targetDoc.head) {
-                            viewport = targetDoc.createElement('meta');
-                            viewport.name = 'viewport';
-                            targetDoc.head.appendChild(viewport);
-                        }
-                        if (viewport) {
-                            viewport.content = 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes';
-                        }
 
-                        // 单页应用持久样式守护：React 切换路由销毁重建 DOM 时，瞬时补全防护样式
-                        if (!targetDoc.__ag_style_observer_installed && window.MutationObserver) {
-                            targetDoc.__ag_style_observer_installed = true;
-                            var styleObserver = new MutationObserver(function() {
-                                if (!targetDoc.getElementById(styleId)) {
-                                    var restyle = targetDoc.createElement('style');
-                                    restyle.id = styleId;
-                                    restyle.type = 'text/css';
-                                    restyle.innerHTML = getSelectionCSS();
-                                    (targetDoc.head || targetDoc.documentElement).appendChild(restyle);
-                                }
-                            });
-                            styleObserver.observe(targetDoc.documentElement, { childList: true, subtree: true });
-                        }
-                    } catch (e) {}
+                        injectMessageCopyButtons(targetDoc);
 
-                    // 启动高精度逐字触摸选择引擎
-                    try {
-                        initSmartTextExtractor(targetDoc);
-                    } catch (e) {}
-
-                    // 递归注入并穿透所有相同源 iframe
-                    try {
                         var iframes = targetDoc.querySelectorAll('iframe');
                         for (var i = 0; i < iframes.length; i++) {
                             try {
@@ -706,34 +449,12 @@ class MainActivity : AppCompatActivity() {
                     } catch (e) {}
                 }
 
-                // 首次注入顶层文档
                 injectStylesAndFixes(document);
 
-
-
-                // 动态 DOM 变更观察器
-                try {
-                    var docObserver = new MutationObserver(function() {
-                        injectStylesAndFixes(document);
-                    });
-                    if (document.body) {
-                        docObserver.observe(document.body, { childList: true, subtree: true });
-                    }
-                } catch (e) {}
-
-                // 3. 断线重连看门狗：监测 "Lost connection to the remote instance" 提示
+                // 4. 断线重连看门狗
                 function findDisconnectBanner() {
-                    var keywords = [
-                        "Lost connection to the remote instance",
-                        "Lost connection",
-                        "refresh the page"
-                    ];
-                    var walker = document.createTreeWalker(
-                        document.body || document.documentElement,
-                        NodeFilter.SHOW_TEXT,
-                        null,
-                        false
-                    );
+                    var keywords = ["Lost connection to the remote instance", "Lost connection", "refresh the page"];
+                    var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null, false);
                     var node;
                     while (node = walker.nextNode()) {
                         var val = node.nodeValue;
@@ -763,10 +484,7 @@ class MainActivity : AppCompatActivity() {
                         if (!banner.__ag_click_bound) {
                             banner.__ag_click_bound = true;
                             banner.style.cursor = 'pointer';
-                            banner.style.transition = 'all 0.2s ease';
-
                             var tip = document.createElement('div');
-                            tip.id = '__ag_reconnect_tip';
                             tip.style.cssText = 'font-size: 11px; color: #1a73e8; margin-top: 4px; font-weight: bold; text-align: center;';
                             tip.textContent = '⚡ 点击立即重连 (或稍后自动恢复)';
                             banner.appendChild(tip);
@@ -796,27 +514,20 @@ class MainActivity : AppCompatActivity() {
                                 }, 2200);
                             }
                         }
-                    } else {
-                        if (window.__autoReloadTimer) {
-                            clearTimeout(window.__autoReloadTimer);
-                            window.__autoReloadTimer = null;
-                        }
                     }
                 };
 
                 setInterval(function() {
                     window.__checkAndHandleDisconnect();
                     injectStylesAndFixes(document);
-                    initSmartTextExtractor(document);
                 }, 1500);
 
                 var observer = new MutationObserver(function() {
                     window.__checkAndHandleDisconnect();
                     injectStylesAndFixes(document);
-                    initSmartTextExtractor(document);
                 });
                 if (document.body) {
-                    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+                    observer.observe(document.body, { childList: true, subtree: true });
                 }
 
                 document.addEventListener('visibilitychange', function() {
@@ -825,7 +536,6 @@ class MainActivity : AppCompatActivity() {
                         setTimeout(function() {
                             window.__checkAndHandleDisconnect();
                             injectStylesAndFixes(document);
-                            initSmartTextExtractor(document);
                         }, 300);
                     }
                 });
@@ -935,206 +645,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var lastSheetOpenTime = 0L
-
-    private fun initGestureDetector() {
-        gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onLongPress(e: MotionEvent) {
-                // 1. 原生立即震动反馈（触感响应）
-                vibratePhone(22)
-
-                // 2. 真实屏幕密度换算（物理像素 -> 视口 CSS 像素）
-                val density = resources.displayMetrics.density.coerceAtLeast(1f)
-                val cssX = (e.x / density).toInt()
-                val cssY = (e.y / density).toInt()
-
-                // 3. 提取命中区域文本并弹出 BottomSheet（自包含独立执行引擎 + Base64 无损传输）
-                val selfContainedScript = """
-                (function() {
-                    try {
-                        // 1. 确保防护样式即时就位
-                        var styleId = '__ag_self_contained_style';
-                        if (!document.getElementById(styleId)) {
-                            var st = document.createElement('style');
-                            st.id = styleId;
-                            st.textContent = '.selection-popup, .selection-quote-popup, [data-testid="selection-quote-button"], [data-testid="selection-popup-quote-button"] { display: none !important; visibility: hidden !important; pointer-events: none !important; } .select-text, [class*="select-text"], .scroll-mt-4 { -webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; } input, textarea, [contenteditable="true"] { -webkit-user-select: text !important; user-select: text !important; }';
-                            (document.head || document.documentElement).appendChild(st);
-                        }
-
-                        // 2. 清除网页已有选择状态
-                        try {
-                            var sel = window.getSelection();
-                            if (sel) sel.removeAllRanges();
-                        } catch(e) {}
-
-                        // 3. 确定触控坐标（优先使用 touchstart 高精度原生视口坐标，回退到 Density 换算坐标）
-                        var targetX = ($cssX > 0) ? $cssX : 0;
-                        var targetY = ($cssY > 0) ? $cssY : 0;
-                        if (window.__lastTouchX > 0 && window.__lastTouchY > 0) {
-                            targetX = window.__lastTouchX;
-                            targetY = window.__lastTouchY;
-                        }
-
-                        function isSpurious(txt) {
-                            if (!txt) return true;
-                            if (txt.length > 25) return false;
-                            var low = txt.toLowerCase().trim();
-                            return low === 'feedback' || low === 'copy' || low === 'good response' || 
-                                   low === 'bad response' || low === 'like' || low === 'dislike' || 
-                                   low === 'retry' || low === 'share' || low === 'quote';
-                        }
-
-                        function extractFromElement(el) {
-                            if (!el) return "";
-                            if (el.closest('[role="tooltip"], [data-radix-portal], [data-floating-ui-portal], .selection-popup, .selection-quote-popup')) {
-                                return "";
-                            }
-                            if (el.closest('input, textarea, select, [contenteditable="true"], .chat-input-widget')) {
-                                return "";
-                            }
-
-                            // 优先命中核心正文排版容器
-                            var selectText = el.closest('.select-text, [class*="select-text"]');
-                            if (selectText) {
-                                var t = (selectText.innerText || selectText.textContent || '').trim();
-                                if (t.length > 0 && !isSpurious(t)) return t;
-                            }
-
-                            // 优先命中独立代码块
-                            var codeBlock = el.closest('div[class*="code-block"], pre');
-                            if (codeBlock) {
-                                var ct = (codeBlock.innerText || codeBlock.textContent || '').trim();
-                                if (ct.length > 0 && !isSpurious(ct)) return ct;
-                            }
-
-                            // 优先命中用户输入引用气泡
-                            var userQuotable = el.closest('[data-quotable="true"], div.whitespace-pre-wrap, [data-testid="user-input-step"]');
-                            if (userQuotable) {
-                                var qt = (userQuotable.innerText || userQuotable.textContent || '').trim();
-                                if (qt.length > 0 && !isSpurious(qt)) return qt;
-                            }
-
-                            // 命中外层消息行外壳（向上追溯整条消息正文）
-                            var row = el.closest('.scroll-mt-4, [class*="scroll-mt"], [data-testid*="step"], div[role="article"], div.flex.items-start, div.flex.items-end');
-                            if (row) {
-                                var c = row.querySelector('.select-text, [class*="select-text"]');
-                                if (c) {
-                                    var ct2 = (c.innerText || c.textContent || '').trim();
-                                    if (ct2.length > 0 && !isSpurious(ct2)) return ct2;
-                                }
-                                var p = row.querySelector('[data-quotable="true"], div.whitespace-pre-wrap, [class*="bg-card"]');
-                                if (p) {
-                                    var pt = (p.innerText || p.textContent || '').trim();
-                                    if (pt.length > 0 && !isSpurious(pt)) return pt;
-                                }
-                                var cb = row.querySelector('div[class*="code-block"], pre');
-                                if (cb) {
-                                    var cbt = (cb.innerText || cb.textContent || '').trim();
-                                    if (cbt.length > 0 && !isSpurious(cbt)) return cbt;
-                                }
-                                var clone = row.cloneNode(true);
-                                var btns = clone.querySelectorAll('button, [role="button"], svg, .flex.items-center.gap-1');
-                                btns.forEach(b => { if (b && b.parentElement) b.parentElement.removeChild(b); });
-                                var rt = (clone.innerText || clone.textContent || '').trim();
-                                if (rt.length > 0 && !isSpurious(rt)) return rt;
-                            }
-
-                            // 逐级向上溯源通用文本块
-                            var cur = el;
-                            while (cur && cur !== document.body && cur !== document.documentElement) {
-                                if (cur.matches && cur.matches('.select-text, [class*="select-text"], .scroll-mt-4, [class*="scroll-mt"], div.whitespace-pre-wrap, article, section, p, blockquote, li, ol, ul')) {
-                                    var gt = (cur.innerText || cur.textContent || '').trim();
-                                    if (gt.length > 0 && gt.length < 50000 && !isSpurious(gt)) return gt;
-                                }
-                                cur = cur.parentElement;
-                            }
-                            return "";
-                        }
-
-                        // 4. 多点放射探测（覆盖触碰点周边 40px 内 13 个点，穿透浮层）
-                        var probes = [
-                            [0, 0], [0, -15], [0, 15], [-15, 0], [15, 0],
-                            [-25, -25], [25, 25], [-25, 25], [25, -25],
-                            [0, -40], [0, 40], [-40, 0], [40, 0]
-                        ];
-                        for (var i = 0; i < probes.length; i++) {
-                            var px = targetX + probes[i][0];
-                            var py = targetY + probes[i][1];
-                            var hit = document.elementFromPoint(px, py);
-                            if (hit) {
-                                if (hit.closest && hit.closest('[role="tooltip"], .selection-popup, .selection-quote-popup, [data-radix-portal]')) {
-                                    var oldPe = hit.style.pointerEvents;
-                                    hit.style.pointerEvents = 'none';
-                                    var under = document.elementFromPoint(px, py);
-                                    hit.style.pointerEvents = oldPe;
-                                    if (under) hit = under;
-                                }
-                                var txt = extractFromElement(hit);
-                                if (txt && txt.length > 0) {
-                                    return window.btoa(unescape(encodeURIComponent(txt)));
-                                }
-                            }
-                        }
-
-                        // 5. 视口长消息判定黄金准则：触碰 Y 坐标直接落在某条消息的 [rect.top, rect.bottom] 内
-                        var allBubbles = document.querySelectorAll('.select-text, [class*="select-text"], div.whitespace-pre-wrap, .scroll-mt-4');
-                        var best = null;
-                        var bestDist = Infinity;
-                        for (var j = 0; j < allBubbles.length; j++) {
-                            var b = allBubbles[j];
-                            if (b.closest('[role="tooltip"], [data-radix-portal]')) continue;
-                            var r = b.getBoundingClientRect();
-                            if (r.height === 0 || r.width === 0) continue;
-                            if (targetY >= r.top && targetY <= r.bottom) {
-                                var tIn = extractFromElement(b);
-                                if (tIn && tIn.length > 0) {
-                                    return window.btoa(unescape(encodeURIComponent(tIn)));
-                                }
-                            }
-                            var d = Math.abs((r.top + r.height / 2) - targetY);
-                            if (d < bestDist) {
-                                bestDist = d;
-                                best = b;
-                            }
-                        }
-                        if (best) {
-                            var btxt = extractFromElement(best);
-                            if (btxt && btxt.length > 0) {
-                                return window.btoa(unescape(encodeURIComponent(btxt)));
-                            }
-                        }
-
-                        // 6. 即时选区兜底
-                        var curSel = (window.getSelection ? window.getSelection().toString() : "").trim();
-                        if (curSel && curSel.length > 0) {
-                            return window.btoa(unescape(encodeURIComponent(curSel)));
-                        }
-
-                        return "";
-                    } catch(err) {
-                        return "ERR:" + err.message;
-                    }
-                })()
-                """.trimIndent()
-
-                binding.webView.evaluateJavascript(selfContainedScript) { rawResult ->
-                    val cleanRaw = rawResult?.trim('"')?.replace("\\", "") ?: ""
-                    val text = if (cleanRaw.isNotBlank() && cleanRaw != "null" && !cleanRaw.startsWith("ERR:")) {
-                        try {
-                            String(android.util.Base64.decode(cleanRaw, android.util.Base64.DEFAULT), Charsets.UTF_8).trim()
-                        } catch (e: Exception) {
-                            cleanRaw
-                        }
-                    } else ""
-
-                    if (text.isNotBlank()) {
-                        showTextExtractionSheet(text)
-                    } else {
-                        Toast.makeText(this@MainActivity, "长按消息内容即可选词复制", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-        })
-    }
 
     private fun vibratePhone(duration: Long) {
         try {
