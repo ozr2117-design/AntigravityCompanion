@@ -3,8 +3,6 @@ package com.antigravity.companion
 import android.content.Context
 import android.util.AttributeSet
 import android.view.ActionMode
-import android.view.Menu
-import android.view.MenuItem
 import android.webkit.WebView
 
 /**
@@ -16,16 +14,6 @@ class NoActionModeWebView @JvmOverloads constructor(
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : WebView(context, attrs, defStyleAttr) {
-
-    init {
-        val noActionCallback = object : ActionMode.Callback {
-            override fun onCreateActionMode(mode: ActionMode?, menu: Menu?): Boolean = false
-            override fun onPrepareActionMode(mode: ActionMode?, menu: Menu?): Boolean = false
-            override fun onActionItemClicked(mode: ActionMode?, item: MenuItem?): Boolean = false
-            override fun onDestroyActionMode(mode: ActionMode?) {}
-        }
-        customSelectionActionModeCallback = noActionCallback
-    }
 
     override fun startActionMode(callback: ActionMode.Callback?): ActionMode? {
         return null
