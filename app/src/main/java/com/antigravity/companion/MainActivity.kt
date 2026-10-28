@@ -104,7 +104,7 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initWebView()
 
-        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.32 已就绪", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.33 已就绪", Toast.LENGTH_SHORT).show()
 
         // 拦截物理返回键：若复制浮条可见则优先隐藏并清除选区，否则在网页内后退
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -142,19 +142,38 @@ class MainActivity : AppCompatActivity() {
         updateSystemBars()
     }
 
-    // 彻底禁止 Android Window 层级弹出 TYPE_FLOATING ActionMode 浮条，杜绝系统 Copy 药丸遮挡左手柄
+    // 彻底禁止 Android Window 层级弹出 ActionMode 浮条或顶部 ActionBar，杜绝系统 Copy 药丸
+    private val dummyActionMode by lazy {
+        object : ActionMode() {
+            override fun setTitle(title: CharSequence?) {}
+            override fun setTitle(resId: Int) {}
+            override fun setSubtitle(subtitle: CharSequence?) {}
+            override fun setSubtitle(resId: Int) {}
+            override fun setCustomView(view: View?) {}
+            override fun invalidate() {}
+            override fun finish() {}
+            override fun getMenu(): android.view.Menu = android.widget.PopupMenu(this@MainActivity, binding.root).menu
+            override fun getTitle(): CharSequence? = null
+            override fun getSubtitle(): CharSequence? = null
+            override fun getCustomView(): View? = null
+            override fun getMenuInflater(): android.view.MenuInflater = menuInflater
+        }
+    }
+
     override fun onWindowStartingActionMode(callback: ActionMode.Callback?): ActionMode? {
-        return null
+        return dummyActionMode
     }
 
     override fun onWindowStartingActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? {
-        return null
+        return dummyActionMode
     }
 
     override fun onActionModeStarted(mode: ActionMode?) {
         super.onActionModeStarted(mode)
         try {
-            mode?.finish()
+            if (mode !== dummyActionMode) {
+                mode?.finish()
+            }
         } catch (e: Exception) {}
     }
 
@@ -304,7 +323,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.32", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.33", Toast.LENGTH_SHORT).show()
                 }
 
                 // 页面加载完成后注入监听脚本：支持切回前台自动触发唤醒
@@ -392,109 +411,31 @@ class MainActivity : AppCompatActivity() {
 
     private fun injectEarlyHook(view: WebView?) {
         // 在网页加载早期立即：
-        // 1. 关闭 Quote 气泡与 Base UI 上下文菜单特性开关：写入 localStorage 关闭 enable-conversation-selection-quoting 与 enable-custom-context-menus
-        // 2. 短路 (hover: none)，掐灭 React 20ms re-render 强杀手势
-        // 3. 彻底阻断移动端 TouchHold 向 contextmenu 的事件合成（灭绝左侧白色 Copy 药丸）
-        // 4. 原型链拦截 appendChild/insertBefore，物理拒收 Quote 气泡与浮动菜单进入 DOM 树
+        // 1. 源头拔电：拦截 EventTarget.prototype.addEventListener，彻底拒收 Quote 组件核心监听器
+        // 2. 彻底阻断移动端 TouchHold 向 contextmenu 的事件合成（灭绝左侧白色 Copy 药丸）
+        // 3. 原型链拦截 appendChild/insertBefore，物理拒收 Quote 气泡与浮动菜单进入 DOM 树
         val hookJs = """
             (function() {
-                try {
-                    var key = "jetski.developer.customFlagOverrides";
-                    var flags = {};
-                    try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
-                    var changed = false;
-                    if (flags["enable-conversation-selection-quoting"] !== false) {
-                        flags["enable-conversation-selection-quoting"] = false;
-                        changed = true;
-                    }
-                    if (flags["enable-custom-context-menus"] !== false) {
-                        flags["enable-custom-context-menus"] = false;
-                        changed = true;
-                    }
-                    if (changed) {
-                        localStorage.setItem(key, JSON.stringify(flags));
-                    }
-                } catch(e) {}
-                try {
-                    if (!window.__ag_hover_shortcircuited && window.matchMedia) {
-                        window.__ag_hover_shortcircuited = true;
-                        var origMatchMedia = window.matchMedia;
-                        window.matchMedia = function(q) {
-                            if (typeof q === 'string' && (q.indexOf('hover: none') !== -1 || q.indexOf('hover:none') !== -1)) {
-                                return {
-                                    matches: false,
-                                    media: q,
-                                    onchange: null,
-                                    addListener: function() {},
-                                    removeListener: function() {},
-                                    addEventListener: function() {},
-                                    removeEventListener: function() {},
-                                    dispatchEvent: function() { return false; }
-                                };
+                // 1. 物理源头拔电：在原型链上拦截 addEventListener，直接切断 Quote 监听器注册
+                if (!window.__ag_event_listener_hooked && window.EventTarget) {
+                    window.__ag_event_listener_hooked = true;
+                    var origAddEventListener = EventTarget.prototype.addEventListener;
+                    EventTarget.prototype.addEventListener = function(type, listener, options) {
+                        if (type === 'touchend' || type === 'mouseup' || type === 'selectionchange') {
+                            if (listener && typeof listener === 'function') {
+                                var src = '';
+                                try { src = Function.prototype.toString.call(listener); } catch(e) {}
+                                if (src.indexOf('selection-popup') !== -1 || src.indexOf('hover: none') !== -1 || src.indexOf('hover:none') !== -1) {
+                                    // 彻底拔掉电源：绝不向浏览器注册 UY 的 k 与 l 监听器，直接掐死 f() 触发
+                                    return;
+                                }
                             }
-                            return origMatchMedia.call(window, q);
-                        };
-                    }
-
-                    // 彻底阻断 contextmenu 事件合成（Base UI 无法再弹出左手柄 Copy 浮层）
-                    if (!window.__ag_contextmenu_blocked) {
-                        window.__ag_contextmenu_blocked = true;
-                        function blockContextMenu(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            e.stopImmediatePropagation();
-                            return false;
                         }
-                        window.addEventListener('contextmenu', blockContextMenu, true);
-                        document.addEventListener('contextmenu', blockContextMenu, true);
-                    }
+                        return origAddEventListener.apply(this, arguments);
+                    };
+                }
 
-                    // 物理绝杀：拦截 Node.prototype.appendChild 和 insertBefore，彻底杜绝 Quote 气泡进入 DOM
-                    if (!window.__ag_dom_hooked && window.Node) {
-                        window.__ag_dom_hooked = true;
-                        function isQuoteOrContextMenuNode(node) {
-                            if (!node || node.nodeType !== 1) return false;
-                            if (node.id === '__ag_web_floating_copy_capsule') return false;
-                            var cls = node.className || '';
-                            if (typeof cls === 'string' && (
-                                cls.indexOf('selection-popup') !== -1 ||
-                                cls.indexOf('selection-quote') !== -1 ||
-                                cls.indexOf('context-menu') !== -1 ||
-                                cls.indexOf('ContextMenu') !== -1
-                            )) return true;
-                            var tid = node.getAttribute ? (node.getAttribute('data-testid') || '') : '';
-                            if (tid.indexOf('quote') !== -1 || tid.indexOf('context-menu') !== -1) return true;
-                            var role = node.getAttribute ? (node.getAttribute('role') || '') : '';
-                            if (role === 'menu') return true;
-                            var id = node.id || '';
-                            if (id.indexOf('base-ui-') !== -1) return true;
-                            if (node.hasAttribute && (node.hasAttribute('data-base-ui-portal') || node.hasAttribute('data-radix-popper-content-wrapper'))) return true;
-                            if (node.querySelector && node.querySelector('[data-testid*="quote"], [data-testid*="context-menu"], [role="menu"], [id^="base-ui-"], .selection-quote-popup')) return true;
-                            return false;
-                        }
-
-                        var origAppend = Node.prototype.appendChild;
-                        Node.prototype.appendChild = function(child) {
-                            if (isQuoteOrContextMenuNode(child)) return child;
-                            return origAppend.apply(this, arguments);
-                        };
-
-                        var origInsert = Node.prototype.insertBefore;
-                        Node.prototype.insertBefore = function(newNode, refNode) {
-                            if (isQuoteOrContextMenuNode(newNode)) return newNode;
-                            return origInsert.apply(this, arguments);
-                        };
-                    }
-                } catch(e) {}
-            })();
-        """.trimIndent()
-        view?.evaluateJavascript(hookJs, null)
-    }
-
-    private fun injectKeepAliveAndNotificationScript(view: WebView?) {
-        val js = """
-            (function() {
-                // 0. 特性开关根源熔断
+                // 2. 特性开关安全写入
                 try {
                     var key = "jetski.developer.customFlagOverrides";
                     var flags = {};
@@ -513,7 +454,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 } catch(e) {}
 
-                // 1. 彻底短路 (hover: none)
+                // 3. 彻底短路 (hover: none)
                 try {
                     if (!window.__ag_hover_shortcircuited && window.matchMedia) {
                         window.__ag_hover_shortcircuited = true;
@@ -536,7 +477,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 } catch(e) {}
 
-                // 2. 彻底阻断 contextmenu 事件合成
+                // 4. 阻断 contextmenu 事件合成（Base UI 无法再弹出左手柄 Copy 浮层）
                 if (!window.__ag_contextmenu_blocked) {
                     window.__ag_contextmenu_blocked = true;
                     function blockContextMenu(e) {
@@ -549,7 +490,106 @@ class MainActivity : AppCompatActivity() {
                     document.addEventListener('contextmenu', blockContextMenu, true);
                 }
 
-                // 3. SPA 路由全局拦截保活（针对 React Router pushState/replaceState）
+                // 5. 物理绝杀：拦截 Node.prototype.appendChild 和 insertBefore
+                if (!window.__ag_dom_hooked && window.Node) {
+                    window.__ag_dom_hooked = true;
+                    function isQuoteOrContextMenuNode(node) {
+                        if (!node || node.nodeType !== 1) return false;
+                        if (node.id === '__ag_web_floating_copy_capsule') return false;
+                        var cls = node.className || '';
+                        if (typeof cls === 'string' && (
+                            cls.indexOf('selection-popup') !== -1 ||
+                            cls.indexOf('selection-quote') !== -1 ||
+                            cls.indexOf('context-menu') !== -1 ||
+                            cls.indexOf('ContextMenu') !== -1
+                        )) return true;
+                        var tid = node.getAttribute ? (node.getAttribute('data-testid') || '') : '';
+                        if (tid.indexOf('quote') !== -1 || tid.indexOf('context-menu') !== -1) return true;
+                        var role = node.getAttribute ? (node.getAttribute('role') || '') : '';
+                        if (role === 'menu') return true;
+                        var id = node.id || '';
+                        if (id.indexOf('base-ui-') !== -1) return true;
+                        if (node.hasAttribute && (node.hasAttribute('data-base-ui-portal') || node.hasAttribute('data-radix-popper-content-wrapper'))) return true;
+                        if (node.querySelector && node.querySelector('[data-testid*="quote"], [data-testid*="context-menu"], [role="menu"], [id^="base-ui-"], .selection-quote-popup')) return true;
+                        return false;
+                    }
+
+                    var origAppend = Node.prototype.appendChild;
+                    Node.prototype.appendChild = function(child) {
+                        if (isQuoteOrContextMenuNode(child)) return child;
+                        return origAppend.apply(this, arguments);
+                    };
+
+                    var origInsert = Node.prototype.insertBefore;
+                    Node.prototype.insertBefore = function(newNode, refNode) {
+                        if (isQuoteOrContextMenuNode(newNode)) return newNode;
+                        return origInsert.apply(this, arguments);
+                    };
+                }
+            })();
+        """.trimIndent()
+        view?.evaluateJavascript(hookJs, null)
+    }
+
+    private fun injectKeepAliveAndNotificationScript(view: WebView?) {
+        val js = """
+            (function() {
+                // 1. 物理源头拔电：在原型链上拦截 addEventListener，直接切断 Quote 监听器注册
+                if (!window.__ag_event_listener_hooked && window.EventTarget) {
+                    window.__ag_event_listener_hooked = true;
+                    var origAddEventListener = EventTarget.prototype.addEventListener;
+                    EventTarget.prototype.addEventListener = function(type, listener, options) {
+                        if (type === 'touchend' || type === 'mouseup' || type === 'selectionchange') {
+                            if (listener && typeof listener === 'function') {
+                                var src = '';
+                                try { src = Function.prototype.toString.call(listener); } catch(e) {}
+                                if (src.indexOf('selection-popup') !== -1 || src.indexOf('hover: none') !== -1 || src.indexOf('hover:none') !== -1) {
+                                    // 彻底拔掉电源：绝不向浏览器注册 UY 的 k 与 l 监听器，直接掐死 f() 触发
+                                    return;
+                                }
+                            }
+                        }
+                        return origAddEventListener.apply(this, arguments);
+                    };
+                }
+
+                // 2. 彻底短路 (hover: none)
+                try {
+                    if (!window.__ag_hover_shortcircuited && window.matchMedia) {
+                        window.__ag_hover_shortcircuited = true;
+                        var origMatchMedia = window.matchMedia;
+                        window.matchMedia = function(q) {
+                            if (typeof q === 'string' && (q.indexOf('hover: none') !== -1 || q.indexOf('hover:none') !== -1)) {
+                                return {
+                                    matches: false,
+                                    media: q,
+                                    onchange: null,
+                                    addListener: function() {},
+                                    removeListener: function() {},
+                                    addEventListener: function() {},
+                                    removeEventListener: function() {},
+                                    dispatchEvent: function() { return false; }
+                                };
+                            }
+                            return origMatchMedia.call(window, q);
+                        };
+                    }
+                } catch(e) {}
+
+                // 3. 彻底阻断 contextmenu 事件合成
+                if (!window.__ag_contextmenu_blocked) {
+                    window.__ag_contextmenu_blocked = true;
+                    function blockContextMenu(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        return false;
+                    }
+                    window.addEventListener('contextmenu', blockContextMenu, true);
+                    document.addEventListener('contextmenu', blockContextMenu, true);
+                }
+
+                // 4. SPA 路由全局拦截保活（针对 React Router pushState/replaceState）
                 if (!window.__ag_history_intercepted && window.history) {
                     window.__ag_history_intercepted = true;
                     var origPushState = history.pushState;
@@ -573,13 +613,13 @@ class MainActivity : AppCompatActivity() {
                     window.addEventListener('hashchange', onSpaRouteChange);
                 }
 
-                // 4. 设置网页语言为中文，唤醒 ICU 中文分词字典
+                // 5. 设置网页语言为中文，唤醒 ICU 中文分词字典
                 try {
                     document.documentElement.lang = 'zh-CN';
                     if (document.body) document.body.lang = 'zh-CN';
                 } catch(e) {}
 
-                // 5. 行高呼吸间隙优化与彻底消除 Quote 气泡与 Base UI 浮层的高级样式
+                // 6. 行高呼吸间隙优化与彻底消除 Quote 气泡与 Base UI 浮层的高级样式
                 function getSelectionCSS() {
                     return 'html, body { ' +
                         '-webkit-text-size-adjust: 100% !important; ' +
@@ -647,7 +687,7 @@ class MainActivity : AppCompatActivity() {
                         '.__ag_msg_copy_btn:active { background: #e8eaed; }';
                 }
 
-                // 6. Web DOM 浮动复制胶囊与持久选区状态机（Selection State Lock）
+                // 7. Web DOM 浮动复制胶囊与持久选区状态机（Selection State Lock）
                 window.__ag_locked_text = "";
                 var copyCapsuleEl = null;
 
@@ -729,7 +769,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 };
 
-                // 7. 选区状态锁心跳与监听
+                // 8. 选区状态锁心跳与监听
                 var selTimer = null;
                 function handleSelectionUpdate() {
                     try {
