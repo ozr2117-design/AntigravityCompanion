@@ -104,7 +104,7 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initWebView()
 
-        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.34 已就绪", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.35 已就绪", Toast.LENGTH_SHORT).show()
 
         // 拦截物理返回键：若复制浮条可见则优先隐藏并清除选区，否则在网页内后退
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -304,7 +304,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.34", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.35", Toast.LENGTH_SHORT).show()
                 }
 
                 // 页面加载完成后注入监听脚本：支持切回前台自动触发唤醒
@@ -392,48 +392,54 @@ class MainActivity : AppCompatActivity() {
 
     private fun injectEarlyHook(view: WebView?) {
         // 在网页加载早期立即：
-        // 1. 源头拔电：拦截 EventTarget.prototype.addEventListener，彻底拒收 Quote 组件核心监听器
-        // 2. 彻底阻断移动端 TouchHold 向 contextmenu 的事件合成（灭绝左侧白色 Copy 药丸）
-        // 3. 原型链拦截 appendChild/insertBefore，物理拒收 Quote 气泡与浮动菜单进入 DOM 树
+        // 1. 真正拔掉前端两大真插头：写入 customContextMenusEnabled 与 customFlagOverrides
+        // 2. 拦截 window.setTimeout，阻断 Base UI 500ms 触控长按计时器 (D.start(500))
+        // 3. 阻断 contextmenu 与长按合成事件
+        // 4. 原型链拦截 appendChild/insertBefore 物理拒收
         val hookJs = """
             (function() {
-                // 1. 物理源头拔电：在原型链上拦截 addEventListener，直接切断 Quote 监听器注册
-                if (!window.__ag_event_listener_hooked && window.EventTarget) {
-                    window.__ag_event_listener_hooked = true;
-                    var origAddEventListener = EventTarget.prototype.addEventListener;
-                    EventTarget.prototype.addEventListener = function(type, listener, options) {
-                        if (type === 'touchend' || type === 'mouseup' || type === 'selectionchange') {
-                            if (listener && typeof listener === 'function') {
-                                var src = '';
-                                try { src = Function.prototype.toString.call(listener); } catch(e) {}
-                                if (src.indexOf('selection-popup') !== -1 || src.indexOf('hover: none') !== -1 || src.indexOf('hover:none') !== -1) {
-                                    // 彻底拔掉电源：绝不向浏览器注册 UY 的 k 与 l 监听器，直接掐死 f() 触发
-                                    return;
-                                }
+                // 1. 真正拔掉两大真插头（根变量与特性开关双重关死）
+                function killPlugs() {
+                    try {
+                        if (window.localStorage) {
+                            if (localStorage.getItem("customContextMenusEnabled") !== "false") {
+                                localStorage.setItem("customContextMenusEnabled", "false");
+                            }
+                            var key = "jetski.developer.customFlagOverrides";
+                            var flags = {};
+                            try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
+                            var changed = false;
+                            if (flags["enable-conversation-selection-quoting"] !== false) {
+                                flags["enable-conversation-selection-quoting"] = false;
+                                changed = true;
+                            }
+                            if (flags["enable-custom-context-menus"] !== false) {
+                                flags["enable-custom-context-menus"] = false;
+                                changed = true;
+                            }
+                            if (changed) {
+                                localStorage.setItem(key, JSON.stringify(flags));
                             }
                         }
-                        return origAddEventListener.apply(this, arguments);
+                    } catch(e) {}
+                }
+                killPlugs();
+
+                // 2. 拦截 Base UI 500ms 触控长按计时器
+                if (!window.__ag_timeout_intercepted && window.setTimeout) {
+                    window.__ag_timeout_intercepted = true;
+                    var origSetTimeout = window.setTimeout;
+                    window.setTimeout = function(fn, delay) {
+                        if (delay === 500 && typeof fn === 'function') {
+                            var fnStr = '';
+                            try { fnStr = Function.prototype.toString.call(fn); } catch(e) {}
+                            if (fnStr.indexOf('setOpen') !== -1 || fnStr.indexOf('trigger-press') !== -1 || fnStr.indexOf('context-menu') !== -1) {
+                                return -1;
+                            }
+                        }
+                        return origSetTimeout.apply(this, arguments);
                     };
                 }
-
-                // 2. 特性开关安全写入
-                try {
-                    var key = "jetski.developer.customFlagOverrides";
-                    var flags = {};
-                    try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
-                    var changed = false;
-                    if (flags["enable-conversation-selection-quoting"] !== false) {
-                        flags["enable-conversation-selection-quoting"] = false;
-                        changed = true;
-                    }
-                    if (flags["enable-custom-context-menus"] !== false) {
-                        flags["enable-custom-context-menus"] = false;
-                        changed = true;
-                    }
-                    if (changed) {
-                        localStorage.setItem(key, JSON.stringify(flags));
-                    }
-                } catch(e) {}
 
                 // 3. 彻底短路 (hover: none)
                 try {
@@ -458,7 +464,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 } catch(e) {}
 
-                // 4. 阻断 contextmenu 事件合成（Base UI 无法再弹出左手柄 Copy 浮层）
+                // 4. 阻断 contextmenu 事件合成
                 if (!window.__ag_contextmenu_blocked) {
                     window.__ag_contextmenu_blocked = true;
                     function blockContextMenu(e) {
@@ -477,15 +483,16 @@ class MainActivity : AppCompatActivity() {
                     function isQuoteOrContextMenuNode(node) {
                         if (!node || node.nodeType !== 1) return false;
                         if (node.id === '__ag_web_floating_copy_capsule') return false;
+                        var tid = node.getAttribute ? (node.getAttribute('data-testid') || '') : '';
+                        if (tid.indexOf('context-menu') !== -1 || tid.indexOf('quote') !== -1) return true;
                         var cls = node.className || '';
                         if (typeof cls === 'string' && (
                             cls.indexOf('selection-popup') !== -1 ||
                             cls.indexOf('selection-quote') !== -1 ||
                             cls.indexOf('context-menu') !== -1 ||
-                            cls.indexOf('ContextMenu') !== -1
+                            cls.indexOf('ContextMenu') !== -1 ||
+                            cls.indexOf('z-[6000]') !== -1
                         )) return true;
-                        var tid = node.getAttribute ? (node.getAttribute('data-testid') || '') : '';
-                        if (tid.indexOf('quote') !== -1 || tid.indexOf('context-menu') !== -1) return true;
                         var role = node.getAttribute ? (node.getAttribute('role') || '') : '';
                         if (role === 'menu') return true;
                         var id = node.id || '';
@@ -515,49 +522,47 @@ class MainActivity : AppCompatActivity() {
     private fun injectKeepAliveAndNotificationScript(view: WebView?) {
         val js = """
             (function() {
-                // 1. 物理源头拔电：在原型链上拦截 addEventListener，直接切断 Quote 监听器注册
-                if (!window.__ag_event_listener_hooked && window.EventTarget) {
-                    window.__ag_event_listener_hooked = true;
-                    var origAddEventListener = EventTarget.prototype.addEventListener;
-                    EventTarget.prototype.addEventListener = function(type, listener, options) {
-                        if (type === 'touchend' || type === 'mouseup' || type === 'selectionchange') {
-                            if (listener && typeof listener === 'function') {
-                                var src = '';
-                                try { src = Function.prototype.toString.call(listener); } catch(e) {}
-                                if (src.indexOf('selection-popup') !== -1 || src.indexOf('hover: none') !== -1 || src.indexOf('hover:none') !== -1) {
-                                    // 彻底拔掉电源：绝不向浏览器注册 UY 的 k 与 l 监听器，直接掐死 f() 触发
-                                    return;
-                                }
-                            }
-                        }
-                        return origAddEventListener.apply(this, arguments);
-                    };
-                }
-
-                // 2. 彻底短路 (hover: none)
+                // 1. 拔掉两大真插头（当前真实会话域名写入）
                 try {
-                    if (!window.__ag_hover_shortcircuited && window.matchMedia) {
-                        window.__ag_hover_shortcircuited = true;
-                        var origMatchMedia = window.matchMedia;
-                        window.matchMedia = function(q) {
-                            if (typeof q === 'string' && (q.indexOf('hover: none') !== -1 || q.indexOf('hover:none') !== -1)) {
-                                return {
-                                    matches: false,
-                                    media: q,
-                                    onchange: null,
-                                    addListener: function() {},
-                                    removeListener: function() {},
-                                    addEventListener: function() {},
-                                    removeEventListener: function() {},
-                                    dispatchEvent: function() { return false; }
-                                };
-                            }
-                            return origMatchMedia.call(window, q);
-                        };
+                    if (window.localStorage) {
+                        if (localStorage.getItem("customContextMenusEnabled") !== "false") {
+                            localStorage.setItem("customContextMenusEnabled", "false");
+                        }
+                        var key = "jetski.developer.customFlagOverrides";
+                        var flags = {};
+                        try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
+                        var changed = false;
+                        if (flags["enable-conversation-selection-quoting"] !== false) {
+                            flags["enable-conversation-selection-quoting"] = false;
+                            changed = true;
+                        }
+                        if (flags["enable-custom-context-menus"] !== false) {
+                            flags["enable-custom-context-menus"] = false;
+                            changed = true;
+                        }
+                        if (changed) {
+                            localStorage.setItem(key, JSON.stringify(flags));
+                        }
                     }
                 } catch(e) {}
 
-                // 3. 彻底阻断 contextmenu 事件合成与 Quote 捕获阶段一票否决
+                // 2. 拦截 Base UI 500ms 计时器
+                if (!window.__ag_timeout_intercepted && window.setTimeout) {
+                    window.__ag_timeout_intercepted = true;
+                    var origSetTimeout = window.setTimeout;
+                    window.setTimeout = function(fn, delay) {
+                        if (delay === 500 && typeof fn === 'function') {
+                            var fnStr = '';
+                            try { fnStr = Function.prototype.toString.call(fn); } catch(e) {}
+                            if (fnStr.indexOf('setOpen') !== -1 || fnStr.indexOf('trigger-press') !== -1 || fnStr.indexOf('context-menu') !== -1) {
+                                return -1;
+                            }
+                        }
+                        return origSetTimeout.apply(this, arguments);
+                    };
+                }
+
+                // 3. 彻底阻断 contextmenu 事件合成
                 if (!window.__ag_contextmenu_blocked) {
                     window.__ag_contextmenu_blocked = true;
                     function blockContextMenu(e) {
@@ -568,28 +573,6 @@ class MainActivity : AppCompatActivity() {
                     }
                     window.addEventListener('contextmenu', blockContextMenu, true);
                     document.addEventListener('contextmenu', blockContextMenu, true);
-
-                    function blockQuoteCaptureEvents(e) {
-                        var p = e.composedPath ? e.composedPath() : [];
-                        for (var i = 0; i < p.length; i++) {
-                            var el = p[i];
-                            if (el instanceof HTMLElement && (
-                                el.classList.contains('selection-popup') ||
-                                el.classList.contains('selection-quote-popup') ||
-                                (el.getAttribute && (el.getAttribute('data-testid') || '').indexOf('quote') !== -1) ||
-                                (el.getAttribute && el.getAttribute('role') === 'menu')
-                            )) {
-                                e.stopPropagation();
-                                e.stopImmediatePropagation();
-                                if (e.cancelable) e.preventDefault();
-                                return false;
-                            }
-                        }
-                    }
-                    window.addEventListener('touchend', blockQuoteCaptureEvents, true);
-                    window.addEventListener('mouseup', blockQuoteCaptureEvents, true);
-                    document.addEventListener('touchend', blockQuoteCaptureEvents, true);
-                    document.addEventListener('mouseup', blockQuoteCaptureEvents, true);
                 }
 
                 // 4. SPA 路由全局拦截保活（针对 React Router pushState/replaceState）
@@ -622,17 +605,19 @@ class MainActivity : AppCompatActivity() {
                     if (document.body) document.body.lang = 'zh-CN';
                 } catch(e) {}
 
-                // 6. 行高呼吸间隙优化与彻底消除 Quote 气泡与 Base UI 浮层的高级样式
+                // 6. 行高呼吸间隙优化与彻底消除 Quote 气泡与 Base UI 浮层的超强样式
                 function getSelectionCSS() {
                     return 'html, body { ' +
                         '-webkit-text-size-adjust: 100% !important; ' +
                         'text-size-adjust: 100% !important; ' +
                         '} ' +
-                        '/* 彻底消灭 Quote 气泡与 Base UI 上下文菜单的所有可能容器 */ ' +
-                        '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="selection-popup"], ' +
-                        '[data-testid*="context-menu"], [role="menu"], [id^="base-ui-"], [class*="context-menu"], [class*="ContextMenu"], ' +
-                        'button[data-testid*="quote"], button[data-testid*="selection-quote-button"], [class*="quote-popup"], [class*="QuotePopup"], ' +
-                        '[data-radix-popper-content-wrapper], [data-base-ui-portal], div[data-portal*="quote"] { ' +
+                        '/* 彻底绝杀 Base UI context-menu-popup 与 Quote 气泡的所有容器 */ ' +
+                        '[data-testid="context-menu-popup"], [data-testid*="context-menu"], ' +
+                        '[data-testid*="selection-quote"], [data-testid*="selection-popup"], [data-testid*="quote"], ' +
+                        'button[data-testid*="quote"], button[data-testid*="selection-quote-button"], ' +
+                        '.selection-popup, .selection-quote-popup, [class*="quote-popup"], [class*="QuotePopup"], ' +
+                        '[role="menu"], [id^="base-ui-"], [class*="context-menu"], [class*="ContextMenu"], ' +
+                        '[data-radix-popper-content-wrapper], [data-base-ui-portal], div[data-portal*="quote"], .z-\[6000\] { ' +
                         'display: none !important; ' +
                         'visibility: hidden !important; ' +
                         'pointer-events: none !important; ' +
@@ -665,10 +650,10 @@ class MainActivity : AppCompatActivity() {
                         'margin-bottom: 0.55em !important; ' +
                         'contain: inline-size !important; ' +
                         '} ' +
-                        '/* 高清晰选区高亮颜色 */ ' +
+                        '/* 高清晰护眼墨绿选区高亮颜色 */ ' +
                         '::selection { background: rgba(30, 142, 62, 0.28) !important; color: inherit !important; } ' +
                         '::-webkit-selection { background: rgba(30, 142, 62, 0.28) !important; color: inherit !important; } ' +
-                        '/* 避免非文本元素（按钮、头像、图标）误入选区引发全选 */ ' +
+                        '/* 避免非文本元素误入选区引发全选 */ ' +
                         'button, svg, [role="button"], .__ag_msg_copy_btn { ' +
                         '-webkit-user-select: none !important; ' +
                         'user-select: none !important; ' +
@@ -735,13 +720,18 @@ class MainActivity : AppCompatActivity() {
                                 } else if (navigator.clipboard) {
                                     navigator.clipboard.writeText(window.__ag_locked_text);
                                 }
+                                var originalHTML = copyCapsuleEl.innerHTML;
                                 copyCapsuleEl.innerHTML = '<span>✅ 已复制</span>';
+                                copyCapsuleEl.style.background = '#137333';
                                 setTimeout(function() {
                                     window.hideSelectionCapsule();
-                                    window.getSelection()?.removeAllRanges();
+                                    copyCapsuleEl.style.background = '#1e8e3e';
+                                    copyCapsuleEl.innerHTML = originalHTML;
+                                    try { window.getSelection()?.removeAllRanges(); } catch(err) {}
                                 }, 400);
                             }
                         });
+
                         (document.body || document.documentElement).appendChild(copyCapsuleEl);
                     }
                     return copyCapsuleEl;
@@ -791,25 +781,30 @@ class MainActivity : AppCompatActivity() {
                     if (!targetDoc) return;
                     try {
                         var selectors = [
-                            '.selection-popup',
-                            '.selection-quote-popup',
+                            '[data-testid="context-menu-popup"]',
+                            '[data-testid*="context-menu"]',
                             '[data-testid*="selection-quote"]',
                             '[data-testid*="quote"]',
                             'button[data-testid*="quote"]',
                             'button[data-testid*="selection-quote-button"]',
+                            '.selection-popup',
+                            '.selection-quote-popup',
                             '[data-base-ui-portal]',
                             '[role="menu"]',
                             '[id^="base-ui-"]',
                             '[class*="context-menu"]',
                             '[class*="ContextMenu"]',
-                            '[data-radix-popper-content-wrapper]'
+                            '[data-radix-popper-content-wrapper]',
+                            '.z-\[6000\]'
                         ];
                         var els = targetDoc.querySelectorAll(selectors.join(', '));
                         for (var i = 0; i < els.length; i++) {
                             var el = els[i];
                             if (el.id === '__ag_web_floating_copy_capsule') continue;
                             var p = el;
-                            while (p && p.parentElement && p.parentElement !== targetDoc.body && p.parentElement !== targetDoc.documentElement && !p.classList.contains('relative')) {
+                            while (p && p.parentElement && p.parentElement !== targetDoc.body && p.parentElement !== targetDoc.documentElement) {
+                                if (p.hasAttribute && (p.hasAttribute('data-base-ui-portal') || p.hasAttribute('data-portal'))) break;
+                                if (p.classList && p.classList.contains('z-[6000]')) break;
                                 p = p.parentElement;
                             }
                             if (p && p.parentNode) {
@@ -906,6 +901,23 @@ class MainActivity : AppCompatActivity() {
                         targetDoc.documentElement.lang = 'zh-CN';
                         if (targetDoc.body) targetDoc.body.lang = 'zh-CN';
 
+                        // 每次注入都强制刷新真实会话域的 localStorage 真插头
+                        try {
+                            if (window.localStorage) {
+                                if (localStorage.getItem("customContextMenusEnabled") !== "false") {
+                                    localStorage.setItem("customContextMenusEnabled", "false");
+                                }
+                                var key = "jetski.developer.customFlagOverrides";
+                                var flags = {};
+                                try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
+                                if (flags["enable-conversation-selection-quoting"] !== false || flags["enable-custom-context-menus"] !== false) {
+                                    flags["enable-conversation-selection-quoting"] = false;
+                                    flags["enable-custom-context-menus"] = false;
+                                    localStorage.setItem(key, JSON.stringify(flags));
+                                }
+                            }
+                        } catch(e) {}
+
                         var styleId = '__ag_precision_selection_style';
                         var styleEl = targetDoc.getElementById(styleId);
                         if (!styleEl) {
@@ -948,20 +960,15 @@ class MainActivity : AppCompatActivity() {
                 function findDisconnectBanner() {
                     var keywords = ["Lost connection to the remote instance", "Lost connection", "refresh the page"];
                     var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null, false);
-                    var node;
-                    while (node = walker.nextNode()) {
-                        var val = node.nodeValue;
-                        if (!val) continue;
+                    while (walker.nextNode()) {
+                        var node = walker.currentNode;
                         for (var i = 0; i < keywords.length; i++) {
-                            if (val.indexOf(keywords[i]) !== -1) {
+                            if (node.nodeValue && node.nodeValue.indexOf(keywords[i]) !== -1) {
                                 var el = node.parentElement;
-                                while (el && el !== document.body && el.offsetHeight < 220) {
-                                    if (el.tagName === 'DIV' || el.tagName === 'SECTION' || el.getAttribute('role') === 'alert') {
-                                        return el;
-                                    }
+                                while (el && el !== document.body && el.tagName !== 'DIV') {
                                     el = el.parentElement;
                                 }
-                                return node.parentElement;
+                                return el;
                             }
                         }
                     }
