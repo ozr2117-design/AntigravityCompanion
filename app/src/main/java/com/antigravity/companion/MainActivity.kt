@@ -104,15 +104,18 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initWebView()
 
-        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.31 已就绪", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.32 已就绪", Toast.LENGTH_SHORT).show()
 
         // 拦截物理返回键：若复制浮条可见则优先隐藏并清除选区，否则在网页内后退
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (binding.btnFloatingCopy.visibility == View.VISIBLE) {
+                if (binding.btnFloatingCopy.visibility == View.VISIBLE || currentSelectedText.isNotEmpty()) {
                     currentSelectedText = ""
                     binding.btnFloatingCopy.visibility = View.GONE
-                    binding.webView.evaluateJavascript("window.getSelection()?.removeAllRanges();", null)
+                    binding.webView.evaluateJavascript(
+                        "if (typeof window.hideSelectionCapsule === 'function') window.hideSelectionCapsule(); window.getSelection()?.removeAllRanges();",
+                        null
+                    )
                     return
                 }
                 if (binding.webView.canGoBack()) {
@@ -182,7 +185,11 @@ class MainActivity : AppCompatActivity() {
     private fun initViews() {
         binding.root.clipChildren = false
         binding.root.clipToPadding = false
-        binding.btnFloatingCopy.bringToFront()
+        binding.btnFloatingCopy.apply {
+            elevation = 24f * resources.displayMetrics.density
+            translationZ = 24f * resources.displayMetrics.density
+            bringToFront()
+        }
 
         // 底部悬浮“复制已选”胶囊按钮
         binding.btnFloatingCopy.setOnClickListener {
@@ -191,7 +198,10 @@ class MainActivity : AppCompatActivity() {
                 vibratePhone(40)
                 currentSelectedText = ""
                 binding.btnFloatingCopy.visibility = View.GONE
-                binding.webView.evaluateJavascript("window.getSelection()?.removeAllRanges();", null)
+                binding.webView.evaluateJavascript(
+                    "if (typeof window.hideSelectionCapsule === 'function') window.hideSelectionCapsule(); window.getSelection()?.removeAllRanges();",
+                    null
+                )
             }
         }
 
@@ -294,7 +304,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.31", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.32", Toast.LENGTH_SHORT).show()
                 }
 
                 // 页面加载完成后注入监听脚本：支持切回前台自动触发唤醒
@@ -382,17 +392,26 @@ class MainActivity : AppCompatActivity() {
 
     private fun injectEarlyHook(view: WebView?) {
         // 在网页加载早期立即：
-        // 1. 关闭 Quote 气泡根源开关：写入 localStorage 关闭 enable-conversation-selection-quoting
+        // 1. 关闭 Quote 气泡与 Base UI 上下文菜单特性开关：写入 localStorage 关闭 enable-conversation-selection-quoting 与 enable-custom-context-menus
         // 2. 短路 (hover: none)，掐灭 React 20ms re-render 强杀手势
-        // 3. 原型链拦截 appendChild/insertBefore，物理阻断 Quote 气泡插入 DOM 树
+        // 3. 彻底阻断移动端 TouchHold 向 contextmenu 的事件合成（灭绝左侧白色 Copy 药丸）
+        // 4. 原型链拦截 appendChild/insertBefore，物理拒收 Quote 气泡与浮动菜单进入 DOM 树
         val hookJs = """
             (function() {
                 try {
                     var key = "jetski.developer.customFlagOverrides";
                     var flags = {};
                     try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
+                    var changed = false;
                     if (flags["enable-conversation-selection-quoting"] !== false) {
                         flags["enable-conversation-selection-quoting"] = false;
+                        changed = true;
+                    }
+                    if (flags["enable-custom-context-menus"] !== false) {
+                        flags["enable-custom-context-menus"] = false;
+                        changed = true;
+                    }
+                    if (changed) {
                         localStorage.setItem(key, JSON.stringify(flags));
                     }
                 } catch(e) {}
@@ -417,19 +436,39 @@ class MainActivity : AppCompatActivity() {
                         };
                     }
 
+                    // 彻底阻断 contextmenu 事件合成（Base UI 无法再弹出左手柄 Copy 浮层）
+                    if (!window.__ag_contextmenu_blocked) {
+                        window.__ag_contextmenu_blocked = true;
+                        function blockContextMenu(e) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.stopImmediatePropagation();
+                            return false;
+                        }
+                        window.addEventListener('contextmenu', blockContextMenu, true);
+                        document.addEventListener('contextmenu', blockContextMenu, true);
+                    }
+
                     // 物理绝杀：拦截 Node.prototype.appendChild 和 insertBefore，彻底杜绝 Quote 气泡进入 DOM
                     if (!window.__ag_dom_hooked && window.Node) {
                         window.__ag_dom_hooked = true;
                         function isQuoteOrContextMenuNode(node) {
                             if (!node || node.nodeType !== 1) return false;
+                            if (node.id === '__ag_web_floating_copy_capsule') return false;
                             var cls = node.className || '';
-                            if (typeof cls === 'string' && (cls.indexOf('selection-popup') !== -1 || cls.indexOf('selection-quote') !== -1 || cls.indexOf('context-menu') !== -1)) return true;
+                            if (typeof cls === 'string' && (
+                                cls.indexOf('selection-popup') !== -1 ||
+                                cls.indexOf('selection-quote') !== -1 ||
+                                cls.indexOf('context-menu') !== -1 ||
+                                cls.indexOf('ContextMenu') !== -1
+                            )) return true;
                             var tid = node.getAttribute ? (node.getAttribute('data-testid') || '') : '';
                             if (tid.indexOf('quote') !== -1 || tid.indexOf('context-menu') !== -1) return true;
                             var role = node.getAttribute ? (node.getAttribute('role') || '') : '';
                             if (role === 'menu') return true;
                             var id = node.id || '';
                             if (id.indexOf('base-ui-') !== -1) return true;
+                            if (node.hasAttribute && (node.hasAttribute('data-base-ui-portal') || node.hasAttribute('data-radix-popper-content-wrapper'))) return true;
                             if (node.querySelector && node.querySelector('[data-testid*="quote"], [data-testid*="context-menu"], [role="menu"], [id^="base-ui-"], .selection-quote-popup')) return true;
                             return false;
                         }
@@ -446,34 +485,30 @@ class MainActivity : AppCompatActivity() {
                             return origInsert.apply(this, arguments);
                         };
                     }
-
-                    if (!window.__ag_contextmenu_blocked) {
-                        window.__ag_contextmenu_blocked = true;
-                        function blockContextMenu(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            e.stopImmediatePropagation();
-                            return false;
-                        }
-                        window.addEventListener('contextmenu', blockContextMenu, true);
-                        document.addEventListener('contextmenu', blockContextMenu, true);
-                    }
                 } catch(e) {}
             })();
         """.trimIndent()
         view?.evaluateJavascript(hookJs, null)
     }
 
-        private fun injectKeepAliveAndNotificationScript(view: WebView?) {
+    private fun injectKeepAliveAndNotificationScript(view: WebView?) {
         val js = """
             (function() {
-                // 0. 关闭 Quote 特性开关
+                // 0. 特性开关根源熔断
                 try {
                     var key = "jetski.developer.customFlagOverrides";
                     var flags = {};
                     try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
+                    var changed = false;
                     if (flags["enable-conversation-selection-quoting"] !== false) {
                         flags["enable-conversation-selection-quoting"] = false;
+                        changed = true;
+                    }
+                    if (flags["enable-custom-context-menus"] !== false) {
+                        flags["enable-custom-context-menus"] = false;
+                        changed = true;
+                    }
+                    if (changed) {
                         localStorage.setItem(key, JSON.stringify(flags));
                     }
                 } catch(e) {}
@@ -501,7 +536,20 @@ class MainActivity : AppCompatActivity() {
                     }
                 } catch(e) {}
 
-                // 2. SPA 路由全局拦截保活（针对 React Router pushState/replaceState）
+                // 2. 彻底阻断 contextmenu 事件合成
+                if (!window.__ag_contextmenu_blocked) {
+                    window.__ag_contextmenu_blocked = true;
+                    function blockContextMenu(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                        return false;
+                    }
+                    window.addEventListener('contextmenu', blockContextMenu, true);
+                    document.addEventListener('contextmenu', blockContextMenu, true);
+                }
+
+                // 3. SPA 路由全局拦截保活（针对 React Router pushState/replaceState）
                 if (!window.__ag_history_intercepted && window.history) {
                     window.__ag_history_intercepted = true;
                     var origPushState = history.pushState;
@@ -525,23 +573,23 @@ class MainActivity : AppCompatActivity() {
                     window.addEventListener('hashchange', onSpaRouteChange);
                 }
 
-                // 3. 设置网页语言为中文，唤醒 ICU 中文分词字典
+                // 4. 设置网页语言为中文，唤醒 ICU 中文分词字典
                 try {
                     document.documentElement.lang = 'zh-CN';
                     if (document.body) document.body.lang = 'zh-CN';
                 } catch(e) {}
 
-                // 4. 行高呼吸间隙优化与彻底消除 Quote 气泡的高级样式
+                // 5. 行高呼吸间隙优化与彻底消除 Quote 气泡与 Base UI 浮层的高级样式
                 function getSelectionCSS() {
                     return 'html, body { ' +
                         '-webkit-text-size-adjust: 100% !important; ' +
                         'text-size-adjust: 100% !important; ' +
                         '} ' +
-                        '/* 彻底消灭 Quote 气泡的所有可能容器 */ ' +
+                        '/* 彻底消灭 Quote 气泡与 Base UI 上下文菜单的所有可能容器 */ ' +
                         '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="selection-popup"], ' +
                         '[data-testid*="context-menu"], [role="menu"], [id^="base-ui-"], [class*="context-menu"], [class*="ContextMenu"], ' +
                         'button[data-testid*="quote"], button[data-testid*="selection-quote-button"], [class*="quote-popup"], [class*="QuotePopup"], ' +
-                        'div[data-portal*="quote"] { ' +
+                        '[data-radix-popper-content-wrapper], [data-base-ui-portal], div[data-portal*="quote"] { ' +
                         'display: none !important; ' +
                         'visibility: hidden !important; ' +
                         'pointer-events: none !important; ' +
@@ -599,25 +647,132 @@ class MainActivity : AppCompatActivity() {
                         '.__ag_msg_copy_btn:active { background: #e8eaed; }';
                 }
 
-                // 5. Quote 彻底灭绝与选区状态实时上报（驱动原生底部复制胶囊）
-                var selReportTimer = null;
-                function reportSelection() {
+                // 6. Web DOM 浮动复制胶囊与持久选区状态机（Selection State Lock）
+                window.__ag_locked_text = "";
+                var copyCapsuleEl = null;
+
+                window.ensureWebFloatingCapsule = function() {
+                    if (copyCapsuleEl && copyCapsuleEl.parentNode) return copyCapsuleEl;
+                    copyCapsuleEl = document.getElementById('__ag_web_floating_copy_capsule');
+                    if (!copyCapsuleEl) {
+                        copyCapsuleEl = document.createElement('div');
+                        copyCapsuleEl.id = '__ag_web_floating_copy_capsule';
+                        copyCapsuleEl.style.cssText = 
+                            'position: fixed !important; ' +
+                            'bottom: 36px !important; ' +
+                            'left: 50% !important; ' +
+                            'transform: translateX(-50%) translateY(20px) !important; ' +
+                            'z-index: 2147483647 !important; ' +
+                            'background: #1e8e3e !important; ' +
+                            'color: #ffffff !important; ' +
+                            'font-family: system-ui, -apple-system, sans-serif !important; ' +
+                            'font-size: 15px !important; ' +
+                            'font-weight: bold !important; ' +
+                            'padding: 12px 24px !important; ' +
+                            'border-radius: 28px !important; ' +
+                            'box-shadow: 0 6px 22px rgba(0, 0, 0, 0.38), 0 2px 5px rgba(0,0,0,0.2) !important; ' +
+                            'display: flex !important; ' +
+                            'align-items: center !important; ' +
+                            'justify-content: center !important; ' +
+                            'gap: 8px !important; ' +
+                            'cursor: pointer !important; ' +
+                            'opacity: 0 !important; ' +
+                            'pointer-events: none !important; ' +
+                            'transition: opacity 0.16s ease, transform 0.16s ease !important; ' +
+                            'user-select: none !important; ' +
+                            '-webkit-user-select: none !important; ' +
+                            '-webkit-tap-highlight-color: transparent !important;';
+
+                        copyCapsuleEl.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (window.__ag_locked_text) {
+                                if (window.AndroidBridge && window.AndroidBridge.copyToClipboard) {
+                                    window.AndroidBridge.copyToClipboard(window.__ag_locked_text);
+                                } else if (navigator.clipboard) {
+                                    navigator.clipboard.writeText(window.__ag_locked_text);
+                                }
+                                copyCapsuleEl.innerHTML = '<span>✅ 已复制</span>';
+                                setTimeout(function() {
+                                    window.hideSelectionCapsule();
+                                    window.getSelection()?.removeAllRanges();
+                                }, 400);
+                            }
+                        });
+                        (document.body || document.documentElement).appendChild(copyCapsuleEl);
+                    }
+                    return copyCapsuleEl;
+                };
+
+                window.showSelectionCapsule = function(text) {
+                    window.__ag_locked_text = text;
+                    var el = window.ensureWebFloatingCapsule();
+                    el.innerHTML = '<span>📋 复制已选 (' + text.length + ' 字)</span>';
+                    el.style.opacity = '1';
+                    el.style.pointerEvents = 'auto';
+                    el.style.transform = 'translateX(-50%) translateY(0)';
+
+                    if (window.AndroidBridge && window.AndroidBridge.onSelectionChanged) {
+                        window.AndroidBridge.onSelectionChanged(text);
+                    }
+                };
+
+                window.hideSelectionCapsule = function() {
+                    window.__ag_locked_text = "";
+                    if (copyCapsuleEl) {
+                        copyCapsuleEl.style.opacity = '0';
+                        copyCapsuleEl.style.pointerEvents = 'none';
+                        copyCapsuleEl.style.transform = 'translateX(-50%) translateY(20px)';
+                    }
+                    if (window.AndroidBridge && window.AndroidBridge.onSelectionCleared) {
+                        window.AndroidBridge.onSelectionCleared();
+                    }
+                };
+
+                // 7. 选区状态锁心跳与监听
+                var selTimer = null;
+                function handleSelectionUpdate() {
                     try {
                         var sel = window.getSelection();
-                        if (!sel || sel.isCollapsed || !sel.rangeCount) {
-                            if (window.AndroidBridge && window.AndroidBridge.onSelectionCleared) {
-                                window.AndroidBridge.onSelectionCleared();
+                        if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+                            var txt = sel.toString().trim();
+                            if (txt.length > 0) {
+                                window.showSelectionCapsule(txt);
+                                return;
                             }
-                            return;
                         }
-                        var txt = sel.toString();
-                        if (txt && txt.trim().length > 0) {
-                            if (window.AndroidBridge && window.AndroidBridge.onSelectionChanged) {
-                                window.AndroidBridge.onSelectionChanged(txt);
+                    } catch(e) {}
+                }
+
+                function removeQuotePopups(targetDoc) {
+                    if (!targetDoc) return;
+                    try {
+                        var selectors = [
+                            '.selection-popup',
+                            '.selection-quote-popup',
+                            '[data-testid*="selection-quote"]',
+                            '[data-testid*="quote"]',
+                            'button[data-testid*="quote"]',
+                            'button[data-testid*="selection-quote-button"]',
+                            '[data-base-ui-portal]',
+                            '[role="menu"]',
+                            '[id^="base-ui-"]',
+                            '[class*="context-menu"]',
+                            '[class*="ContextMenu"]',
+                            '[data-radix-popper-content-wrapper]'
+                        ];
+                        var els = targetDoc.querySelectorAll(selectors.join(', '));
+                        for (var i = 0; i < els.length; i++) {
+                            var el = els[i];
+                            if (el.id === '__ag_web_floating_copy_capsule') continue;
+                            var p = el;
+                            while (p && p.parentElement && p.parentElement !== targetDoc.body && p.parentElement !== targetDoc.documentElement && !p.classList.contains('relative')) {
+                                p = p.parentElement;
                             }
-                        } else {
-                            if (window.AndroidBridge && window.AndroidBridge.onSelectionCleared) {
-                                window.AndroidBridge.onSelectionCleared();
+                            if (p && p.parentNode) {
+                                p.parentNode.removeChild(p);
+                            } else if (el.parentNode) {
+                                el.parentNode.removeChild(el);
                             }
                         }
                     } catch(e) {}
@@ -627,13 +782,28 @@ class MainActivity : AppCompatActivity() {
                     window.__ag_selection_reporter_bound = true;
                     document.addEventListener('selectionchange', function() {
                         removeQuotePopups(document);
-                        clearTimeout(selReportTimer);
-                        selReportTimer = setTimeout(reportSelection, 40);
+                        clearTimeout(selTimer);
+                        selTimer = setTimeout(handleSelectionUpdate, 30);
                     }, true);
                     window.addEventListener('selectionchange', function() {
                         removeQuotePopups(document);
-                        clearTimeout(selReportTimer);
-                        selReportTimer = setTimeout(reportSelection, 40);
+                        clearTimeout(selTimer);
+                        selTimer = setTimeout(handleSelectionUpdate, 30);
+                    }, true);
+
+                    // 只有当用户主动单指轻触屏幕任意空白区域时，才收起选区与胶囊
+                    document.addEventListener('pointerup', function(e) {
+                        if (e.target && (e.target.closest('#__ag_web_floating_copy_capsule') || e.target.closest('button'))) {
+                            return;
+                        }
+                        setTimeout(function() {
+                            var sel = window.getSelection();
+                            if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+                                if (window.__ag_locked_text) {
+                                    window.hideSelectionCapsule();
+                                }
+                            }
+                        }, 120);
                     }, true);
                 }
 
@@ -687,32 +857,6 @@ class MainActivity : AppCompatActivity() {
                     } catch(e) {}
                 }
 
-                function removeQuotePopups(targetDoc) {
-                    if (!targetDoc) return;
-                    try {
-                        var popups = targetDoc.querySelectorAll('.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid*="quote"], [data-testid*="context-menu"], [role="menu"], [class*="context-menu"], [id^="base-ui-"], button[data-testid*="selection-quote-button"]');
-                        for (var i = 0; i < popups.length; i++) {
-                            var el = popups[i];
-                            var container = (el.closest && el.closest('.selection-popup, .selection-quote-popup, [data-testid*="context-menu"], [role="menu"]')) || el;
-                            if (container && container.parentNode) {
-                                container.parentNode.removeChild(container);
-                            }
-                        }
-                    } catch(e) {}
-                }
-
-                if (!window.__ag_contextmenu_blocked) {
-                    window.__ag_contextmenu_blocked = true;
-                    function blockContextMenu(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        e.stopImmediatePropagation();
-                        return false;
-                    }
-                    window.addEventListener('contextmenu', blockContextMenu, true);
-                    document.addEventListener('contextmenu', blockContextMenu, true);
-                }
-
                 function injectStylesAndFixes(targetDoc) {
                     if (!targetDoc) return;
                     try {
@@ -731,6 +875,7 @@ class MainActivity : AppCompatActivity() {
 
                         removeQuotePopups(targetDoc);
                         injectMessageCopyButtons(targetDoc);
+                        window.ensureWebFloatingCapsule();
 
                         var iframes = targetDoc.querySelectorAll('iframe');
                         for (var i = 0; i < iframes.length; i++) {
@@ -747,7 +892,7 @@ class MainActivity : AppCompatActivity() {
 
                 injectStylesAndFixes(document);
 
-                // 6. 断线重连看门狗
+                // 8. 断线重连看门狗
                 function findDisconnectBanner() {
                     var keywords = ["Lost connection to the remote instance", "Lost connection", "refresh the page"];
                     var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null, false);
@@ -813,11 +958,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 };
 
-                // 高频保活心跳：每 600ms 保障样式和 Quote 清理
+                // 高频保活心跳：每 250ms 保障样式和 Quote 清理
                 setInterval(function() {
                     window.__checkAndHandleDisconnect();
                     injectStylesAndFixes(document);
-                }, 300);
+                }, 250);
 
                 var observer = new MutationObserver(function() {
                     window.__checkAndHandleDisconnect();
@@ -1103,17 +1248,17 @@ class MainActivity : AppCompatActivity() {
                 if (clean.isNotEmpty()) {
                     currentSelectedText = clean
                     val count = clean.length
-                    binding.btnFloatingCopy.text = "📋 复制已选 ($count 字)"
-                    binding.btnFloatingCopy.bringToFront()
-                    if (binding.btnFloatingCopy.visibility != View.VISIBLE) {
-                        binding.btnFloatingCopy.visibility = View.VISIBLE
-                        binding.btnFloatingCopy.alpha = 0f
-                        binding.btnFloatingCopy.animate().alpha(1f).setDuration(150).start()
-                        binding.btnFloatingCopy.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                        vibratePhone(25)
+                    binding.btnFloatingCopy.apply {
+                        this.text = "📋 复制已选 ($count 字)"
+                        bringToFront()
+                        if (visibility != View.VISIBLE) {
+                            alpha = 0f
+                            visibility = View.VISIBLE
+                            animate().alpha(1f).setDuration(120).start()
+                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            vibratePhone(25)
+                        }
                     }
-                } else {
-                    onSelectionCleared()
                 }
             }
         }
@@ -1123,7 +1268,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 currentSelectedText = ""
                 if (binding.btnFloatingCopy.visibility == View.VISIBLE) {
-                    binding.btnFloatingCopy.animate().alpha(0f).setDuration(150).withEndAction {
+                    binding.btnFloatingCopy.animate().alpha(0f).setDuration(120).withEndAction {
                         binding.btnFloatingCopy.visibility = View.GONE
                     }.start()
                 }
