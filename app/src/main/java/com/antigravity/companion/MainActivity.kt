@@ -104,7 +104,7 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initWebView()
 
-        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.36 已就绪", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.37 已就绪", Toast.LENGTH_SHORT).show()
 
         // 拦截物理返回键：若复制浮条可见则优先隐藏并清除选区，否则在网页内后退
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -323,7 +323,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.36", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.37", Toast.LENGTH_SHORT).show()
                 }
 
                 // 页面加载完成后注入监听脚本：支持切回前台自动触发唤醒
@@ -819,17 +819,24 @@ class MainActivity : AppCompatActivity() {
                         for (var i = 0; i < els.length; i++) {
                             var el = els[i];
                             if (el.id === '__ag_web_floating_copy_capsule') continue;
+                            try {
+                                el.style.setProperty('display', 'none', 'important');
+                                el.style.setProperty('visibility', 'hidden', 'important');
+                                el.style.setProperty('pointer-events', 'none', 'important');
+                            } catch(err) {}
                             var p = el;
                             while (p && p.parentElement && p.parentElement !== targetDoc.body && p.parentElement !== targetDoc.documentElement) {
                                 if (p.hasAttribute && (p.hasAttribute('data-base-ui-portal') || p.hasAttribute('data-portal'))) break;
-                                if (p.classList && p.classList.contains('z-[6000]')) break;
+                                if (p.className && typeof p.className === 'string' && p.className.indexOf('z-[6000]') !== -1) break;
                                 p = p.parentElement;
                             }
-                            if (p && p.parentNode) {
-                                p.parentNode.removeChild(p);
-                            } else if (el.parentNode) {
-                                el.parentNode.removeChild(el);
-                            }
+                            try {
+                                if (p && p.parentNode) {
+                                    p.parentNode.removeChild(p);
+                                } else if (el.parentNode) {
+                                    el.parentNode.removeChild(el);
+                                }
+                            } catch(err) {}
                         }
                     } catch(e) {}
                 }
@@ -936,15 +943,44 @@ class MainActivity : AppCompatActivity() {
                             }
                         } catch(e) {}
 
+                        // 1. 动态借用页面现存的合法 Nonce，彻底突破 Google 生产域 CSP 限制
+                        var nonce = '';
+                        try {
+                            var nEl = targetDoc.querySelector('script[nonce], style[nonce]');
+                            if (nEl) nonce = nEl.nonce || nEl.getAttribute('nonce') || '';
+                        } catch(e) {}
+
+                        // 2. 挂载合法带有 Nonce 的 <style> 标签
                         var styleId = '__ag_precision_selection_style';
                         var styleEl = targetDoc.getElementById(styleId);
                         if (!styleEl) {
                             styleEl = targetDoc.createElement('style');
                             styleEl.id = styleId;
                             styleEl.type = 'text/css';
+                            if (nonce) {
+                                styleEl.nonce = nonce;
+                                styleEl.setAttribute('nonce', nonce);
+                            }
                             (targetDoc.head || targetDoc.documentElement).appendChild(styleEl);
                         }
-                        styleEl.innerHTML = getSelectionCSS();
+                        if (nonce && !styleEl.nonce) {
+                            styleEl.nonce = nonce;
+                            styleEl.setAttribute('nonce', nonce);
+                        }
+                        styleEl.textContent = getSelectionCSS();
+
+                        // 3. 启用现代 Chromium 原生 adoptedStyleSheets（Constructable Stylesheets），无视标签 CSP 铁壁
+                        if (targetDoc.adoptedStyleSheets && window.CSSStyleSheet) {
+                            try {
+                                if (!targetDoc.__ag_adopted_sheet) {
+                                    targetDoc.__ag_adopted_sheet = new CSSStyleSheet();
+                                    targetDoc.__ag_adopted_sheet.replaceSync(getSelectionCSS());
+                                    targetDoc.adoptedStyleSheets = [...targetDoc.adoptedStyleSheets, targetDoc.__ag_adopted_sheet];
+                                } else {
+                                    targetDoc.__ag_adopted_sheet.replaceSync(getSelectionCSS());
+                                }
+                            } catch(e) {}
+                        }
 
                         removeQuotePopups(targetDoc);
                         injectMessageCopyButtons(targetDoc);
