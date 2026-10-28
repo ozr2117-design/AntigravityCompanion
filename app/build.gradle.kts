@@ -11,8 +11,8 @@ android {
         applicationId = "com.antigravity.companion"
         minSdk = 26
         targetSdk = 34
-        versionCode = 38
-        versionName = "1.3.33"
+        versionCode = 39
+        versionName = "1.3.34"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

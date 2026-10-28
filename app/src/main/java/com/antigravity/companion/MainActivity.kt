@@ -104,7 +104,7 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initWebView()
 
-        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.33 已就绪", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.34 已就绪", Toast.LENGTH_SHORT).show()
 
         // 拦截物理返回键：若复制浮条可见则优先隐藏并清除选区，否则在网页内后退
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -142,38 +142,19 @@ class MainActivity : AppCompatActivity() {
         updateSystemBars()
     }
 
-    // 彻底禁止 Android Window 层级弹出 ActionMode 浮条或顶部 ActionBar，杜绝系统 Copy 药丸
-    private val dummyActionMode by lazy {
-        object : ActionMode() {
-            override fun setTitle(title: CharSequence?) {}
-            override fun setTitle(resId: Int) {}
-            override fun setSubtitle(subtitle: CharSequence?) {}
-            override fun setSubtitle(resId: Int) {}
-            override fun setCustomView(view: View?) {}
-            override fun invalidate() {}
-            override fun finish() {}
-            override fun getMenu(): android.view.Menu = android.widget.PopupMenu(this@MainActivity, binding.root).menu
-            override fun getTitle(): CharSequence? = null
-            override fun getSubtitle(): CharSequence? = null
-            override fun getCustomView(): View? = null
-            override fun getMenuInflater(): android.view.MenuInflater = menuInflater
-        }
-    }
-
+    // 彻底禁止 Android Window 层级弹出 ActionMode 浮条或顶部 ActionBar，无条件立即 finish
     override fun onWindowStartingActionMode(callback: ActionMode.Callback?): ActionMode? {
-        return dummyActionMode
+        return null
     }
 
     override fun onWindowStartingActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? {
-        return dummyActionMode
+        return null
     }
 
     override fun onActionModeStarted(mode: ActionMode?) {
         super.onActionModeStarted(mode)
         try {
-            if (mode !== dummyActionMode) {
-                mode?.finish()
-            }
+            mode?.finish()
         } catch (e: Exception) {}
     }
 
@@ -323,7 +304,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.33", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.34", Toast.LENGTH_SHORT).show()
                 }
 
                 // 页面加载完成后注入监听脚本：支持切回前台自动触发唤醒
@@ -576,7 +557,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 } catch(e) {}
 
-                // 3. 彻底阻断 contextmenu 事件合成
+                // 3. 彻底阻断 contextmenu 事件合成与 Quote 捕获阶段一票否决
                 if (!window.__ag_contextmenu_blocked) {
                     window.__ag_contextmenu_blocked = true;
                     function blockContextMenu(e) {
@@ -587,6 +568,28 @@ class MainActivity : AppCompatActivity() {
                     }
                     window.addEventListener('contextmenu', blockContextMenu, true);
                     document.addEventListener('contextmenu', blockContextMenu, true);
+
+                    function blockQuoteCaptureEvents(e) {
+                        var p = e.composedPath ? e.composedPath() : [];
+                        for (var i = 0; i < p.length; i++) {
+                            var el = p[i];
+                            if (el instanceof HTMLElement && (
+                                el.classList.contains('selection-popup') ||
+                                el.classList.contains('selection-quote-popup') ||
+                                (el.getAttribute && (el.getAttribute('data-testid') || '').indexOf('quote') !== -1) ||
+                                (el.getAttribute && el.getAttribute('role') === 'menu')
+                            )) {
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+                                if (e.cancelable) e.preventDefault();
+                                return false;
+                            }
+                        }
+                    }
+                    window.addEventListener('touchend', blockQuoteCaptureEvents, true);
+                    window.addEventListener('mouseup', blockQuoteCaptureEvents, true);
+                    document.addEventListener('touchend', blockQuoteCaptureEvents, true);
+                    document.addEventListener('mouseup', blockQuoteCaptureEvents, true);
                 }
 
                 // 4. SPA 路由全局拦截保活（针对 React Router pushState/replaceState）
@@ -831,8 +834,8 @@ class MainActivity : AppCompatActivity() {
                         selTimer = setTimeout(handleSelectionUpdate, 30);
                     }, true);
 
-                    // 只有当用户主动单指轻触屏幕任意空白区域时，才收起选区与胶囊
-                    document.addEventListener('pointerup', function(e) {
+                    // 只有当用户主动单指轻触屏幕任意空白区域（触发 click 且选区已折叠）时，才收起选区与胶囊
+                    document.addEventListener('click', function(e) {
                         if (e.target && (e.target.closest('#__ag_web_floating_copy_capsule') || e.target.closest('button'))) {
                             return;
                         }
@@ -843,7 +846,7 @@ class MainActivity : AppCompatActivity() {
                                     window.hideSelectionCapsule();
                                 }
                             }
-                        }, 120);
+                        }, 150);
                     }, true);
                 }
 
@@ -916,6 +919,15 @@ class MainActivity : AppCompatActivity() {
                         removeQuotePopups(targetDoc);
                         injectMessageCopyButtons(targetDoc);
                         window.ensureWebFloatingCapsule();
+
+                        // 强效 MutationObserver 毫秒级巡检绝杀所有 Quote 与菜单容器
+                        if (!targetDoc.__ag_observer_bound && window.MutationObserver) {
+                            targetDoc.__ag_observer_bound = true;
+                            var obs = new MutationObserver(function() {
+                                removeQuotePopups(targetDoc);
+                            });
+                            obs.observe(targetDoc.body || targetDoc.documentElement, { childList: true, subtree: true });
+                        }
 
                         var iframes = targetDoc.querySelectorAll('iframe');
                         for (var i = 0; i < iframes.length; i++) {
