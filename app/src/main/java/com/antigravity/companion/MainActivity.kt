@@ -1,5 +1,7 @@
 package com.antigravity.companion
 
+import android.view.HapticFeedbackConstants
+
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AlertDialog
@@ -1108,6 +1110,7 @@ class MainActivity : AppCompatActivity() {
                         binding.btnFloatingCopy.alpha = 0f
                         binding.btnFloatingCopy.animate().alpha(1f).setDuration(150).start()
                         binding.btnFloatingCopy.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        vibratePhone(25)
                     }
                 } else {
                     onSelectionCleared()
