@@ -104,7 +104,7 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initWebView()
 
-        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.35 已就绪", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.36 已就绪", Toast.LENGTH_SHORT).show()
 
         // 拦截物理返回键：若复制浮条可见则优先隐藏并清除选区，否则在网页内后退
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -142,19 +142,38 @@ class MainActivity : AppCompatActivity() {
         updateSystemBars()
     }
 
-    // 彻底禁止 Android Window 层级弹出 ActionMode 浮条或顶部 ActionBar，无条件立即 finish
-    override fun onWindowStartingActionMode(callback: ActionMode.Callback?): ActionMode? {
-        return null
+    // 物理防线：针对 Android 15/16/17 与澎湃 OS 4 (HyperOS 4)，统一返回虚空占位 ActionMode
+    // 绝严禁返回 null，防止 PhoneWindow 触发系统默认 FloatingActionMode 回退创建
+    private val dummyActionMode = object : ActionMode() {
+        override fun setTitle(title: CharSequence?) {}
+        override fun setTitle(resId: Int) {}
+        override fun setSubtitle(subtitle: CharSequence?) {}
+        override fun setSubtitle(resId: Int) {}
+        override fun setCustomView(view: View?) {}
+        override fun invalidate() {}
+        override fun finish() {}
+        override fun getMenu(): android.view.Menu? = null
+        override fun getTitle(): CharSequence? = null
+        override fun getSubtitle(): CharSequence? = null
+        override fun getCustomView(): View? = null
+        override fun getMenuInflater(): android.view.MenuInflater? = null
     }
 
-    override fun onWindowStartingActionMode(callback: ActionMode.Callback?, type: Int): ActionMode? {
-        return null
-    }
+    override fun onWindowStartingActionMode(callback: ActionMode.Callback?): ActionMode = dummyActionMode
+
+    override fun onWindowStartingActionMode(callback: ActionMode.Callback?, type: Int): ActionMode = dummyActionMode
 
     override fun onActionModeStarted(mode: ActionMode?) {
         super.onActionModeStarted(mode)
         try {
             mode?.finish()
+        } catch (e: Exception) {}
+    }
+
+    override fun onSupportActionModeStarted(mode: androidx.appcompat.view.ActionMode) {
+        super.onSupportActionModeStarted(mode)
+        try {
+            mode.finish()
         } catch (e: Exception) {}
     }
 
@@ -304,7 +323,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.35", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.36", Toast.LENGTH_SHORT).show()
                 }
 
                 // 页面加载完成后注入监听脚本：支持切回前台自动触发唤醒
@@ -617,7 +636,7 @@ class MainActivity : AppCompatActivity() {
                         'button[data-testid*="quote"], button[data-testid*="selection-quote-button"], ' +
                         '.selection-popup, .selection-quote-popup, [class*="quote-popup"], [class*="QuotePopup"], ' +
                         '[role="menu"], [id^="base-ui-"], [class*="context-menu"], [class*="ContextMenu"], ' +
-                        '[data-radix-popper-content-wrapper], [data-base-ui-portal], div[data-portal*="quote"], .z-\[6000\] { ' +
+                        '[data-radix-popper-content-wrapper], [data-base-ui-portal], div[data-portal*="quote"] { ' +
                         'display: none !important; ' +
                         'visibility: hidden !important; ' +
                         'pointer-events: none !important; ' +
@@ -794,8 +813,7 @@ class MainActivity : AppCompatActivity() {
                             '[id^="base-ui-"]',
                             '[class*="context-menu"]',
                             '[class*="ContextMenu"]',
-                            '[data-radix-popper-content-wrapper]',
-                            '.z-\[6000\]'
+                            '[data-radix-popper-content-wrapper]'
                         ];
                         var els = targetDoc.querySelectorAll(selectors.join(', '));
                         for (var i = 0; i < els.length; i++) {
