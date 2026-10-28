@@ -71,4 +71,14 @@
         android:layout_marginTop="8dp"
         android:text="🔄 重新加载当前页面" />
 
+    <TextView
+        android:id="@+id/tvVersionInfo"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:gravity="center"
+        android:text="Antigravity 伴侣 v1.3.31 (Build 36)"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp" />
+
 </LinearLayout>

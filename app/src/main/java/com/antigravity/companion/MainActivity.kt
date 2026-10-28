@@ -102,6 +102,8 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initWebView()
 
+        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.31 已就绪", Toast.LENGTH_SHORT).show()
+
         // 拦截物理返回键：若复制浮条可见则优先隐藏并清除选区，否则在网页内后退
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -176,6 +178,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initViews() {
+        binding.root.clipChildren = false
+        binding.root.clipToPadding = false
+        binding.btnFloatingCopy.bringToFront()
+
         // 底部悬浮“复制已选”胶囊按钮
         binding.btnFloatingCopy.setOnClickListener {
             if (currentSelectedText.isNotBlank()) {
@@ -286,7 +292,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！如需重新配置或刷新，两指向下滑动即可", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.31", Toast.LENGTH_SHORT).show()
                 }
 
                 // 页面加载完成后注入监听脚本：支持切回前台自动触发唤醒
@@ -809,7 +815,7 @@ class MainActivity : AppCompatActivity() {
                 setInterval(function() {
                     window.__checkAndHandleDisconnect();
                     injectStylesAndFixes(document);
-                }, 600);
+                }, 300);
 
                 var observer = new MutationObserver(function() {
                     window.__checkAndHandleDisconnect();
@@ -1096,10 +1102,12 @@ class MainActivity : AppCompatActivity() {
                     currentSelectedText = clean
                     val count = clean.length
                     binding.btnFloatingCopy.text = "📋 复制已选 ($count 字)"
+                    binding.btnFloatingCopy.bringToFront()
                     if (binding.btnFloatingCopy.visibility != View.VISIBLE) {
                         binding.btnFloatingCopy.visibility = View.VISIBLE
                         binding.btnFloatingCopy.alpha = 0f
                         binding.btnFloatingCopy.animate().alpha(1f).setDuration(150).start()
+                        binding.btnFloatingCopy.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                     }
                 } else {
                     onSelectionCleared()
