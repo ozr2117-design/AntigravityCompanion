@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -12,18 +13,45 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 class KeepAliveService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var storage: StorageManager
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
-        .build()
+    private val httpClient: OkHttpClient by lazy {
+        try {
+            val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+            })
+
+            val sslContext = SSLContext.getInstance("TLS").apply {
+                init(null, trustAllCerts, SecureRandom())
+            }
+
+            OkHttpClient.Builder()
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(5, TimeUnit.SECONDS)
+                .sslSocketFactory(sslContext.socketFactory, trustAllCerts[0] as X509TrustManager)
+                .hostnameVerifier { _, _ -> true }
+                .build()
+        } catch (_: Exception) {
+            OkHttpClient.Builder()
+                .connectTimeout(5, TimeUnit.SECONDS)
+                .readTimeout(5, TimeUnit.SECONDS)
+                .build()
+        }
+    }
 
     private val heartbeatRunnable = object : Runnable {
         override fun run() {
@@ -36,7 +64,7 @@ class KeepAliveService : Service() {
         super.onCreate()
         storage = StorageManager(this)
 
-        // 申请部分唤醒锁，防止系统底层彻底断网
+        // 1. 申请部分唤醒锁，防止 CPU 彻底深度休眠
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = powerManager.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
@@ -45,6 +73,18 @@ class KeepAliveService : Service() {
             setReferenceCounted(false)
             acquire(24 * 60 * 60 * 1000L) // 24小时上限
         }
+
+        // 2. 申请高性能 Wi-Fi 锁，彻底防止 MIUI/HyperOS 息屏掐断网络芯片进入低功耗掉线
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            wifiLock = wifiManager?.createWifiLock(
+                WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                "AntigravityCompanion:KeepAliveWifiLock"
+            )?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (_: Exception) {}
 
         startForegroundNotification()
         handler.post(heartbeatRunnable)
@@ -101,13 +141,16 @@ class KeepAliveService : Service() {
         wakeLock?.let {
             if (it.isHeld) it.release()
         }
+        wifiLock?.let {
+            if (it.isHeld) it.release()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
         private const val NOTIFICATION_ID = 1001
-        private const val HEARTBEAT_INTERVAL_MS = 40_000L // 40秒一次微弱心跳
+        private const val HEARTBEAT_INTERVAL_MS = 15_000L // 15秒一次微弱心跳，永不被路由器 NAT 掐断
 
         fun start(context: Context) {
             val intent = Intent(context, KeepAliveService::class.java)

@@ -72,6 +72,8 @@ class MainActivity : AppCompatActivity() {
     private var isTwoFingerSwipeActive = false
     private var hasShownConnectToast: Boolean = false
     private var currentSelectedText: String = ""
+    private var autoReconnectAttempts = 0
+    private val reconnectHandler = Handler(Looper.getMainLooper())
 
 
 
@@ -104,7 +106,7 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initWebView()
 
-        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.37 已就绪", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.38 已就绪", Toast.LENGTH_SHORT).show()
 
         // 拦截物理返回键：若复制浮条可见则优先隐藏并清除选区，否则在网页内后退
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -317,13 +319,15 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 binding.progressBar.visibility = View.GONE
+                autoReconnectAttempts = 0
+                reconnectHandler.removeCallbacksAndMessages(null)
 
                 // 页面正常加载完成，确保设置按钮完全隐藏，决不遮挡发送按钮！
                 showEmptyState(false)
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.37", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.38", Toast.LENGTH_SHORT).show()
                 }
 
                 // 页面加载完成后注入监听脚本：支持切回前台自动触发唤醒
@@ -338,9 +342,30 @@ class MainActivity : AppCompatActivity() {
                 super.onReceivedError(view, request, error)
                 if (request?.isForMainFrame == true) {
                     binding.progressBar.visibility = View.GONE
-                    // 网络不可达或电脑未开启时，切回配置界面，方便用户重新扫码或修改 IP
-                    showEmptyState(true)
-                    Toast.makeText(this@MainActivity, "连接电脑失败，请检查网络或重新配置地址", Toast.LENGTH_SHORT).show()
+                    if (storage.isConfigured()) {
+                        if (autoReconnectAttempts < 5) {
+                            autoReconnectAttempts++
+                            val delayMs = (2000L * autoReconnectAttempts).coerceAtMost(8000L)
+                            Toast.makeText(
+                                this@MainActivity,
+                                "网络波动连接断开，${delayMs / 1000}秒后自动重试 (${autoReconnectAttempts}/5)...",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            reconnectHandler.removeCallbacksAndMessages(null)
+                            reconnectHandler.postDelayed({
+                                if (storage.isConfigured() && !isFinishing) {
+                                    binding.progressBar.visibility = View.VISIBLE
+                                    binding.webView.reload()
+                                }
+                            }, delayMs)
+                        } else {
+                            // 超过 5 次重试仍不可达，切回配置界面方便重新扫码或修正 IP
+                            showEmptyState(true)
+                            Toast.makeText(this@MainActivity, "连接电脑失败，请检查网络或重新配置地址", Toast.LENGTH_LONG).show()
+                        }
+                    } else {
+                        showEmptyState(true)
+                    }
                 }
             }
 
@@ -1010,19 +1035,39 @@ class MainActivity : AppCompatActivity() {
 
                 injectStylesAndFixes(document);
 
-                // 8. 断线重连看门狗
+                // 8. 精准断线重连看门狗 (彻底杜绝聊天文本与代码误判)
                 function findDisconnectBanner() {
-                    var keywords = ["Lost connection to the remote instance", "Lost connection", "refresh the page"];
-                    var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, null, false);
-                    while (walker.nextNode()) {
-                        var node = walker.currentNode;
-                        for (var i = 0; i < keywords.length; i++) {
-                            if (node.nodeValue && node.nodeValue.indexOf(keywords[i]) !== -1) {
-                                var el = node.parentElement;
-                                while (el && el !== document.body && el.tagName !== 'DIV') {
-                                    el = el.parentElement;
-                                }
+                    var selectors = [
+                        '[role="dialog"]',
+                        '.monaco-dialog-modal',
+                        '.monaco-dialog-box',
+                        '.notification-toast',
+                        '.banner-widget',
+                        '.part.banner'
+                    ];
+                    for (var s = 0; s < selectors.length; s++) {
+                        var elements = document.querySelectorAll(selectors[s]);
+                        for (var e = 0; e < elements.length; e++) {
+                            var el = elements[e];
+                            var text = el.textContent || "";
+                            if (text.indexOf("Lost connection to the remote instance") !== -1 ||
+                                text.indexOf("Lost connection") !== -1 ||
+                                text.indexOf("Connection lost") !== -1) {
                                 return el;
+                            }
+                        }
+                    }
+
+                    // 兜底：只在顶层独立浮层容器中检测，坚决不进入聊天、代码或 Markdown 区域
+                    var fixedOverlays = document.querySelectorAll('body > div, body > aside');
+                    for (var j = 0; j < fixedOverlays.length; j++) {
+                        var overlay = fixedOverlays[j];
+                        var style = window.getComputedStyle(overlay);
+                        if (style.position === 'fixed' || style.position === 'absolute') {
+                            var overlayText = overlay.textContent || "";
+                            if ((overlayText.indexOf("Lost connection") !== -1 || overlayText.indexOf("refresh the page") !== -1) &&
+                                overlay.querySelector('pre, code, .rendered-markdown, article, p') === null) {
+                                return overlay;
                             }
                         }
                     }
@@ -1030,17 +1075,21 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 window.__lastAutoReloadTime = 0;
+                window.__disconnectStartTime = 0;
                 window.__autoReloadTimer = null;
 
                 window.__checkAndHandleDisconnect = function() {
                     var banner = findDisconnectBanner();
                     if (banner) {
+                        if (!window.__disconnectStartTime) {
+                            window.__disconnectStartTime = Date.now();
+                        }
                         if (!banner.__ag_click_bound) {
                             banner.__ag_click_bound = true;
                             banner.style.cursor = 'pointer';
                             var tip = document.createElement('div');
-                            tip.style.cssText = 'font-size: 11px; color: #1a73e8; margin-top: 4px; font-weight: bold; text-align: center;';
-                            tip.textContent = '⚡ 点击立即重连 (或稍后自动恢复)';
+                            tip.style.cssText = 'font-size: 11px; color: #1a73e8; margin-top: 4px; font-weight: bold; text-align: center; padding: 4px; border-radius: 4px; background: rgba(26,115,232,0.1);';
+                            tip.textContent = '⚡ 断线中：点击立即重连 (或等待自动恢复)';
                             banner.appendChild(tip);
 
                             banner.addEventListener('click', function(e) {
@@ -1054,31 +1103,41 @@ class MainActivity : AppCompatActivity() {
                             });
                         }
 
+                        // 给网页自带的 WebSocket 自动重连留出 12 秒的充裕恢复时间
+                        // 超过 12 秒仍未自愈时才触发兜底 reload，彻底消灭频繁重连刷新
                         var now = Date.now();
-                        if (!window.__lastAutoReloadTime || (now - window.__lastAutoReloadTime > 8000)) {
-                            if (!window.__autoReloadTimer) {
-                                window.__autoReloadTimer = setTimeout(function() {
-                                    window.__autoReloadTimer = null;
-                                    window.__lastAutoReloadTime = Date.now();
-                                    if (window.AndroidBridge && window.AndroidBridge.reloadPage) {
-                                        window.AndroidBridge.reloadPage();
-                                    } else {
-                                        window.location.reload();
-                                    }
-                                }, 2200);
+                        if (now - window.__disconnectStartTime > 12000) {
+                            if (!window.__lastAutoReloadTime || (now - window.__lastAutoReloadTime > 15000)) {
+                                if (!window.__autoReloadTimer) {
+                                    window.__autoReloadTimer = setTimeout(function() {
+                                        window.__autoReloadTimer = null;
+                                        window.__lastAutoReloadTime = Date.now();
+                                        window.__disconnectStartTime = 0;
+                                        if (window.AndroidBridge && window.AndroidBridge.reloadPage) {
+                                            window.AndroidBridge.reloadPage();
+                                        } else {
+                                            window.location.reload();
+                                        }
+                                    }, 1000);
+                                }
                             }
                         }
+                    } else {
+                        // 正常连接状态下重置断线计时
+                        window.__disconnectStartTime = 0;
                     }
                 };
 
-                // 高频保活心跳：每 250ms 保障样式和 Quote 清理
+                // 样式与 Quote 清理以 300ms 维持，断线看门狗以 1000ms 检测
+                setInterval(function() {
+                    injectStylesAndFixes(document);
+                }, 300);
+
                 setInterval(function() {
                     window.__checkAndHandleDisconnect();
-                    injectStylesAndFixes(document);
-                }, 250);
+                }, 1000);
 
                 var observer = new MutationObserver(function() {
-                    window.__checkAndHandleDisconnect();
                     injectStylesAndFixes(document);
                 });
                 if (document.body) {
@@ -1091,7 +1150,7 @@ class MainActivity : AppCompatActivity() {
                         setTimeout(function() {
                             window.__checkAndHandleDisconnect();
                             injectStylesAndFixes(document);
-                        }, 200);
+                        }, 500);
                     }
                 });
             })();
@@ -1195,7 +1254,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        binding.webView.onPause()
+        // 关键保活原则：决不可调用 binding.webView.onPause()！
+        // Chromium 的 webView.onPause() 会强行挂起 WebSocket 心跳包与 JS 定时器，
+        // 导致手机一旦息屏或切换后台，电脑端即判定连接超时掐断连接，切回前台时必然断线重连。
+        // 保持 WebView 处于活跃状态，配合 KeepAliveService 的 Partial WakeLock + WifiLock，
+        // 真正实现息屏 1 小时以上长连接稳定不掉线。
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        reconnectHandler.removeCallbacksAndMessages(null)
     }
 
     private var lastSheetOpenTime = 0L
