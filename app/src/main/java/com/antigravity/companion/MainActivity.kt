@@ -108,7 +108,7 @@ class MainActivity : AppCompatActivity() {
         initViews()
         initWebView()
 
-        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.38 已就绪", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.39 已就绪", Toast.LENGTH_SHORT).show()
 
         // 拦截物理返回键：若复制浮条可见则优先隐藏并清除选区，否则在网页内后退
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -146,40 +146,7 @@ class MainActivity : AppCompatActivity() {
         updateSystemBars()
     }
 
-    // 物理防线：针对 Android 15/16/17 与澎湃 OS 4 (HyperOS 4)，统一返回虚空占位 ActionMode
-    // 绝严禁返回 null，防止 PhoneWindow 触发系统默认 FloatingActionMode 回退创建
-    private val dummyActionMode = object : ActionMode() {
-        override fun setTitle(title: CharSequence?) {}
-        override fun setTitle(resId: Int) {}
-        override fun setSubtitle(subtitle: CharSequence?) {}
-        override fun setSubtitle(resId: Int) {}
-        override fun setCustomView(view: View?) {}
-        override fun invalidate() {}
-        override fun finish() {}
-        override fun getMenu(): android.view.Menu? = null
-        override fun getTitle(): CharSequence? = null
-        override fun getSubtitle(): CharSequence? = null
-        override fun getCustomView(): View? = null
-        override fun getMenuInflater(): android.view.MenuInflater? = null
-    }
 
-    override fun onWindowStartingActionMode(callback: ActionMode.Callback?): ActionMode = dummyActionMode
-
-    override fun onWindowStartingActionMode(callback: ActionMode.Callback?, type: Int): ActionMode = dummyActionMode
-
-    override fun onActionModeStarted(mode: ActionMode?) {
-        super.onActionModeStarted(mode)
-        try {
-            mode?.finish()
-        } catch (e: Exception) {}
-    }
-
-    override fun onSupportActionModeStarted(mode: androidx.appcompat.view.ActionMode) {
-        super.onSupportActionModeStarted(mode)
-        try {
-            mode.finish()
-        } catch (e: Exception) {}
-    }
 
     private fun updateSystemBars() {
         val isNightMode = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
@@ -302,19 +269,16 @@ class MainActivity : AppCompatActivity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 binding.progressBar.visibility = View.VISIBLE
-                injectEarlyHook(view)
                 injectKeepAliveAndNotificationScript(view)
             }
 
             override fun onPageCommitVisible(view: WebView?, url: String?) {
                 super.onPageCommitVisible(view, url)
-                injectEarlyHook(view)
                 injectKeepAliveAndNotificationScript(view)
             }
 
             override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
                 super.doUpdateVisitedHistory(view, url, isReload)
-                injectEarlyHook(view)
                 injectKeepAliveAndNotificationScript(view)
             }
 
@@ -329,7 +293,7 @@ class MainActivity : AppCompatActivity() {
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.38", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.39", Toast.LENGTH_SHORT).show()
                 }
 
                 // 页面加载完成后注入监听脚本：支持切回前台自动触发唤醒
@@ -436,278 +400,47 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun injectEarlyHook(view: WebView?) {
-        // 在网页加载早期立即：
-        // 1. 真正拔掉前端两大真插头：写入 customContextMenusEnabled 与 customFlagOverrides
-        // 2. 拦截 window.setTimeout，阻断 Base UI 500ms 触控长按计时器 (D.start(500))
-        // 3. 阻断 contextmenu 与长按合成事件
-        // 4. 原型链拦截 appendChild/insertBefore 物理拒收
-        val hookJs = """
-            (function() {
-                // 1. 真正拔掉两大真插头（根变量与特性开关双重关死）
-                function killPlugs() {
-                    try {
-                        if (window.localStorage) {
-                            if (localStorage.getItem("customContextMenusEnabled") !== "false") {
-                                localStorage.setItem("customContextMenusEnabled", "false");
-                            }
-                            var key = "jetski.developer.customFlagOverrides";
-                            var flags = {};
-                            try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
-                            var changed = false;
-                            if (flags["enable-conversation-selection-quoting"] !== false) {
-                                flags["enable-conversation-selection-quoting"] = false;
-                                changed = true;
-                            }
-                            if (flags["enable-custom-context-menus"] !== false) {
-                                flags["enable-custom-context-menus"] = false;
-                                changed = true;
-                            }
-                            if (changed) {
-                                localStorage.setItem(key, JSON.stringify(flags));
-                            }
-                        }
-                    } catch(e) {}
-                }
-                killPlugs();
-
-                // 2. 拦截 Base UI 500ms 触控长按计时器
-                if (!window.__ag_timeout_intercepted && window.setTimeout) {
-                    window.__ag_timeout_intercepted = true;
-                    var origSetTimeout = window.setTimeout;
-                    window.setTimeout = function(fn, delay) {
-                        if (delay === 500 && typeof fn === 'function') {
-                            var fnStr = '';
-                            try { fnStr = Function.prototype.toString.call(fn); } catch(e) {}
-                            if (fnStr.indexOf('setOpen') !== -1 || fnStr.indexOf('trigger-press') !== -1 || fnStr.indexOf('context-menu') !== -1) {
-                                return -1;
-                            }
-                        }
-                        return origSetTimeout.apply(this, arguments);
-                    };
-                }
-
-                // 3. 彻底短路 (hover: none)
-                try {
-                    if (!window.__ag_hover_shortcircuited && window.matchMedia) {
-                        window.__ag_hover_shortcircuited = true;
-                        var origMatchMedia = window.matchMedia;
-                        window.matchMedia = function(q) {
-                            if (typeof q === 'string' && (q.indexOf('hover: none') !== -1 || q.indexOf('hover:none') !== -1)) {
-                                return {
-                                    matches: false,
-                                    media: q,
-                                    onchange: null,
-                                    addListener: function() {},
-                                    removeListener: function() {},
-                                    addEventListener: function() {},
-                                    removeEventListener: function() {},
-                                    dispatchEvent: function() { return false; }
-                                };
-                            }
-                            return origMatchMedia.call(window, q);
-                        };
-                    }
-                } catch(e) {}
-
-                // 4. 阻断 contextmenu 事件合成
-                if (!window.__ag_contextmenu_blocked) {
-                    window.__ag_contextmenu_blocked = true;
-                    function blockContextMenu(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        e.stopImmediatePropagation();
-                        return false;
-                    }
-                    window.addEventListener('contextmenu', blockContextMenu, true);
-                    document.addEventListener('contextmenu', blockContextMenu, true);
-                }
-
-                // 5. 物理绝杀：拦截 Node.prototype.appendChild 和 insertBefore
-                if (!window.__ag_dom_hooked && window.Node) {
-                    window.__ag_dom_hooked = true;
-                    function isQuoteOrContextMenuNode(node) {
-                        if (!node || node.nodeType !== 1) return false;
-                        if (node.id === '__ag_web_floating_copy_capsule') return false;
-                        var tid = node.getAttribute ? (node.getAttribute('data-testid') || '') : '';
-                        if (tid.indexOf('context-menu') !== -1 || tid.indexOf('quote') !== -1) return true;
-                        var cls = node.className || '';
-                        if (typeof cls === 'string' && (
-                            cls.indexOf('selection-popup') !== -1 ||
-                            cls.indexOf('selection-quote') !== -1 ||
-                            cls.indexOf('context-menu') !== -1 ||
-                            cls.indexOf('ContextMenu') !== -1 ||
-                            cls.indexOf('z-[6000]') !== -1
-                        )) return true;
-                        var role = node.getAttribute ? (node.getAttribute('role') || '') : '';
-                        if (role === 'menu') return true;
-                        var id = node.id || '';
-                        if (id.indexOf('base-ui-') !== -1) return true;
-                        if (node.hasAttribute && (node.hasAttribute('data-base-ui-portal') || node.hasAttribute('data-radix-popper-content-wrapper'))) return true;
-                        if (node.querySelector && node.querySelector('[data-testid*="quote"], [data-testid*="context-menu"], [role="menu"], [id^="base-ui-"], .selection-quote-popup')) return true;
-                        return false;
-                    }
-
-                    var origAppend = Node.prototype.appendChild;
-                    Node.prototype.appendChild = function(child) {
-                        if (isQuoteOrContextMenuNode(child)) return child;
-                        return origAppend.apply(this, arguments);
-                    };
-
-                    var origInsert = Node.prototype.insertBefore;
-                    Node.prototype.insertBefore = function(newNode, refNode) {
-                        if (isQuoteOrContextMenuNode(newNode)) return newNode;
-                        return origInsert.apply(this, arguments);
-                    };
-                }
-            })();
-        """.trimIndent()
-        view?.evaluateJavascript(hookJs, null)
-    }
-
     private fun injectKeepAliveAndNotificationScript(view: WebView?) {
         val js = """
             (function() {
-                // 1. 拔掉两大真插头（当前真实会话域名写入）
-                try {
-                    if (window.localStorage) {
-                        if (localStorage.getItem("customContextMenusEnabled") !== "false") {
-                            localStorage.setItem("customContextMenusEnabled", "false");
-                        }
-                        var key = "jetski.developer.customFlagOverrides";
-                        var flags = {};
-                        try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
-                        var changed = false;
-                        if (flags["enable-conversation-selection-quoting"] !== false) {
-                            flags["enable-conversation-selection-quoting"] = false;
-                            changed = true;
-                        }
-                        if (flags["enable-custom-context-menus"] !== false) {
-                            flags["enable-custom-context-menus"] = false;
-                            changed = true;
-                        }
-                        if (changed) {
-                            localStorage.setItem(key, JSON.stringify(flags));
-                        }
-                    }
-                } catch(e) {}
-
-                // 2. 拦截 Base UI 500ms 计时器
-                if (!window.__ag_timeout_intercepted && window.setTimeout) {
-                    window.__ag_timeout_intercepted = true;
-                    var origSetTimeout = window.setTimeout;
-                    window.setTimeout = function(fn, delay) {
-                        if (delay === 500 && typeof fn === 'function') {
-                            var fnStr = '';
-                            try { fnStr = Function.prototype.toString.call(fn); } catch(e) {}
-                            if (fnStr.indexOf('setOpen') !== -1 || fnStr.indexOf('trigger-press') !== -1 || fnStr.indexOf('context-menu') !== -1) {
-                                return -1;
-                            }
-                        }
-                        return origSetTimeout.apply(this, arguments);
-                    };
-                }
-
-                // 3. 彻底阻断 contextmenu 事件合成
-                if (!window.__ag_contextmenu_blocked) {
-                    window.__ag_contextmenu_blocked = true;
-                    function blockContextMenu(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        e.stopImmediatePropagation();
-                        return false;
-                    }
-                    window.addEventListener('contextmenu', blockContextMenu, true);
-                    document.addEventListener('contextmenu', blockContextMenu, true);
-                }
-
-                // 4. SPA 路由全局拦截保活（针对 React Router pushState/replaceState）
-                if (!window.__ag_history_intercepted && window.history) {
-                    window.__ag_history_intercepted = true;
-                    var origPushState = history.pushState;
-                    var origReplaceState = history.replaceState;
-                    function onSpaRouteChange() {
-                        setTimeout(function() {
-                            injectStylesAndFixes(document);
-                        }, 50);
-                    }
-                    history.pushState = function() {
-                        var ret = origPushState.apply(this, arguments);
-                        onSpaRouteChange();
-                        return ret;
-                    };
-                    history.replaceState = function() {
-                        var ret = origReplaceState.apply(this, arguments);
-                        onSpaRouteChange();
-                        return ret;
-                    };
-                    window.addEventListener('popstate', onSpaRouteChange);
-                    window.addEventListener('hashchange', onSpaRouteChange);
-                }
-
-                // 5. 设置网页语言为中文，唤醒 ICU 中文分词字典
+                // 1. 设置网页语言为中文，唤醒 ICU 中文分词字典
                 try {
                     document.documentElement.lang = 'zh-CN';
                     if (document.body) document.body.lang = 'zh-CN';
                 } catch(e) {}
 
-                // 6. 行高呼吸间隙优化与彻底消除 Quote 气泡与 Base UI 浮层的超强样式
+                // 2. 注入自然选词与复制样式（仅隐藏 Quote 引用气泡，绝不破坏 role=menu 与 Portal）
                 function getSelectionCSS() {
                     return 'html, body { ' +
                         '-webkit-text-size-adjust: 100% !important; ' +
                         'text-size-adjust: 100% !important; ' +
                         '} ' +
-                        '/* 彻底绝杀 Base UI context-menu-popup 与 Quote 气泡的所有容器 */ ' +
-                        '[data-testid="context-menu-popup"], [data-testid*="context-menu"], ' +
-                        '[data-testid*="selection-quote"], [data-testid*="selection-popup"], [data-testid*="quote"], ' +
-                        'button[data-testid*="quote"], button[data-testid*="selection-quote-button"], ' +
-                        '.selection-popup, .selection-quote-popup, [class*="quote-popup"], [class*="QuotePopup"], ' +
-                        '[role="menu"], [id^="base-ui-"], [class*="context-menu"], [class*="ContextMenu"], ' +
-                        '[data-radix-popper-content-wrapper], [data-base-ui-portal], div[data-portal*="quote"] { ' +
+                        '/* 屏蔽 Google 桌面端 Quote 气泡，避免遮挡移动端手柄 */ ' +
+                        '.selection-popup, .selection-quote-popup, [data-testid*="selection-quote"], [data-testid="selection-quote-button"] { ' +
                         'display: none !important; ' +
                         'visibility: hidden !important; ' +
                         'pointer-events: none !important; ' +
-                        'width: 0 !important; ' +
-                        'height: 0 !important; ' +
-                        'opacity: 0 !important; ' +
-                        'position: fixed !important; ' +
-                        'top: -9999px !important; ' +
-                        'left: -9999px !important; ' +
-                        'transform: scale(0) !important; ' +
-                        'z-index: -99999 !important; ' +
                         '} ' +
-                        '/* 根治首字选择痛点：列表标记符号彻底禁止参与长按命中，防止首字误抓到圆点导致全选 */ ' +
-                        'li::marker, ul > li::before, ol > li::before { ' +
-                        'user-select: none !important; ' +
-                        '-webkit-user-select: none !important; ' +
-                        'pointer-events: none !important; ' +
-                        '} ' +
-                        '/* 行高呼吸间隙优化：将正文行高拉宽至 1.95，拉大水滴垂直间距，杜绝手指重叠误触 */ ' +
+                        '/* 恢复全文及输入框自然选词与光标拖拽能力 */ ' +
                         '.select-text, [class*="select-text"], div[role="article"], .prose, article, p, li { ' +
                         '-webkit-user-select: text !important; ' +
                         'user-select: text !important; ' +
                         '-webkit-touch-callout: default !important; ' +
-                        'touch-action: pan-y !important; ' +
-                        'line-height: 1.95 !important; ' +
-                        'letter-spacing: 0.025em !important; ' +
                         'word-break: break-word !important; ' +
                         '} ' +
-                        '.select-text p, div[role="article"] p { ' +
-                        'margin-bottom: 0.55em !important; ' +
-                        'contain: inline-size !important; ' +
+                        'input, textarea, [contenteditable="true"] { ' +
+                        '-webkit-user-select: text !important; ' +
+                        'user-select: text !important; ' +
                         '} ' +
-                        '/* 高清晰护眼墨绿选区高亮颜色 */ ' +
                         '::selection { background: rgba(30, 142, 62, 0.28) !important; color: inherit !important; } ' +
                         '::-webkit-selection { background: rgba(30, 142, 62, 0.28) !important; color: inherit !important; } ' +
-                        '/* 避免非文本元素误入选区引发全选 */ ' +
                         'button, svg, [role="button"], .__ag_msg_copy_btn { ' +
                         '-webkit-user-select: none !important; ' +
                         'user-select: none !important; ' +
                         '} ' +
-                        '.monaco-editor .view-overlays { pointer-events: none !important; } ' +
                         'table td, table th { ' +
                         'white-space: normal !important; ' +
-                        'line-height: 1.7 !important; ' +
+                        'line-height: 1.6 !important; ' +
                         '} ' +
                         '.__ag_msg_copy_btn { ' +
                         'position: absolute; right: 8px; top: 6px; z-index: 40; ' +
@@ -721,94 +454,35 @@ class MainActivity : AppCompatActivity() {
                         '.__ag_msg_copy_btn:active { background: #e8eaed; }';
                 }
 
-                // 7. Web DOM 浮动复制胶囊与持久选区状态机（Selection State Lock）
-                window.__ag_locked_text = "";
-                var copyCapsuleEl = null;
-
-                window.ensureWebFloatingCapsule = function() {
-                    if (copyCapsuleEl && copyCapsuleEl.parentNode) return copyCapsuleEl;
-                    copyCapsuleEl = document.getElementById('__ag_web_floating_copy_capsule');
-                    if (!copyCapsuleEl) {
-                        copyCapsuleEl = document.createElement('div');
-                        copyCapsuleEl.id = '__ag_web_floating_copy_capsule';
-                        copyCapsuleEl.style.cssText = 
-                            'position: fixed !important; ' +
-                            'bottom: 36px !important; ' +
-                            'left: 50% !important; ' +
-                            'transform: translateX(-50%) translateY(20px) !important; ' +
-                            'z-index: 2147483647 !important; ' +
-                            'background: #1e8e3e !important; ' +
-                            'color: #ffffff !important; ' +
-                            'font-family: system-ui, -apple-system, sans-serif !important; ' +
-                            'font-size: 15px !important; ' +
-                            'font-weight: bold !important; ' +
-                            'padding: 12px 24px !important; ' +
-                            'border-radius: 28px !important; ' +
-                            'box-shadow: 0 6px 22px rgba(0, 0, 0, 0.38), 0 2px 5px rgba(0,0,0,0.2) !important; ' +
-                            'display: flex !important; ' +
-                            'align-items: center !important; ' +
-                            'justify-content: center !important; ' +
-                            'gap: 8px !important; ' +
-                            'cursor: pointer !important; ' +
-                            'opacity: 0 !important; ' +
-                            'pointer-events: none !important; ' +
-                            'transition: opacity 0.16s ease, transform 0.16s ease !important; ' +
-                            'user-select: none !important; ' +
-                            '-webkit-user-select: none !important; ' +
-                            '-webkit-tap-highlight-color: transparent !important;';
-
-                        copyCapsuleEl.addEventListener('click', function(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            if (window.__ag_locked_text) {
-                                if (window.AndroidBridge && window.AndroidBridge.copyToClipboard) {
-                                    window.AndroidBridge.copyToClipboard(window.__ag_locked_text);
-                                } else if (navigator.clipboard) {
-                                    navigator.clipboard.writeText(window.__ag_locked_text);
-                                }
-                                var originalHTML = copyCapsuleEl.innerHTML;
-                                copyCapsuleEl.innerHTML = '<span>✅ 已复制</span>';
-                                copyCapsuleEl.style.background = '#137333';
-                                setTimeout(function() {
-                                    window.hideSelectionCapsule();
-                                    copyCapsuleEl.style.background = '#1e8e3e';
-                                    copyCapsuleEl.innerHTML = originalHTML;
-                                    try { window.getSelection()?.removeAllRanges(); } catch(err) {}
-                                }, 400);
+                function injectStyles(targetDoc) {
+                    if (!targetDoc) return;
+                    try {
+                        var styleId = '__ag_precision_selection_style';
+                        var styleEl = targetDoc.getElementById(styleId);
+                        if (!styleEl) {
+                            styleEl = targetDoc.createElement('style');
+                            styleEl.id = styleId;
+                            styleEl.type = 'text/css';
+                            var nEl = targetDoc.querySelector('script[nonce], style[nonce]');
+                            var nonce = nEl ? (nEl.nonce || nEl.getAttribute('nonce') || '') : '';
+                            if (nonce) {
+                                styleEl.nonce = nonce;
+                                styleEl.setAttribute('nonce', nonce);
                             }
-                        });
+                            (targetDoc.head || targetDoc.documentElement).appendChild(styleEl);
+                            styleEl.textContent = getSelectionCSS();
+                        }
+                        if (targetDoc.adoptedStyleSheets && window.CSSStyleSheet && !targetDoc.__ag_adopted_sheet) {
+                            try {
+                                targetDoc.__ag_adopted_sheet = new CSSStyleSheet();
+                                targetDoc.__ag_adopted_sheet.replaceSync(getSelectionCSS());
+                                targetDoc.adoptedStyleSheets = [...targetDoc.adoptedStyleSheets, targetDoc.__ag_adopted_sheet];
+                            } catch(e) {}
+                        }
+                    } catch(e) {}
+                }
 
-                        (document.body || document.documentElement).appendChild(copyCapsuleEl);
-                    }
-                    return copyCapsuleEl;
-                };
-
-                window.showSelectionCapsule = function(text) {
-                    window.__ag_locked_text = text;
-                    var el = window.ensureWebFloatingCapsule();
-                    el.innerHTML = '<span>📋 复制已选 (' + text.length + ' 字)</span>';
-                    el.style.opacity = '1';
-                    el.style.pointerEvents = 'auto';
-                    el.style.transform = 'translateX(-50%) translateY(0)';
-
-                    if (window.AndroidBridge && window.AndroidBridge.onSelectionChanged) {
-                        window.AndroidBridge.onSelectionChanged(text);
-                    }
-                };
-
-                window.hideSelectionCapsule = function() {
-                    window.__ag_locked_text = "";
-                    if (copyCapsuleEl) {
-                        copyCapsuleEl.style.opacity = '0';
-                        copyCapsuleEl.style.pointerEvents = 'none';
-                        copyCapsuleEl.style.transform = 'translateX(-50%) translateY(20px)';
-                    }
-                    if (window.AndroidBridge && window.AndroidBridge.onSelectionCleared) {
-                        window.AndroidBridge.onSelectionCleared();
-                    }
-                };
-
-                // 8. 选区状态锁心跳与监听
+                // 3. 选区状态监听：向原生桥梁同步当前选区（驱动底部悬浮复制按钮）
                 var selTimer = null;
                 function handleSelectionUpdate() {
                     try {
@@ -816,54 +490,14 @@ class MainActivity : AppCompatActivity() {
                         if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
                             var txt = sel.toString().trim();
                             if (txt.length > 0) {
-                                window.showSelectionCapsule(txt);
+                                if (window.AndroidBridge && window.AndroidBridge.onSelectionChanged) {
+                                    window.AndroidBridge.onSelectionChanged(txt);
+                                }
                                 return;
                             }
                         }
-                    } catch(e) {}
-                }
-
-                function removeQuotePopups(targetDoc) {
-                    if (!targetDoc) return;
-                    try {
-                        var selectors = [
-                            '[data-testid="context-menu-popup"]',
-                            '[data-testid*="context-menu"]',
-                            '[data-testid*="selection-quote"]',
-                            '[data-testid*="quote"]',
-                            'button[data-testid*="quote"]',
-                            'button[data-testid*="selection-quote-button"]',
-                            '.selection-popup',
-                            '.selection-quote-popup',
-                            '[data-base-ui-portal]',
-                            '[role="menu"]',
-                            '[id^="base-ui-"]',
-                            '[class*="context-menu"]',
-                            '[class*="ContextMenu"]',
-                            '[data-radix-popper-content-wrapper]'
-                        ];
-                        var els = targetDoc.querySelectorAll(selectors.join(', '));
-                        for (var i = 0; i < els.length; i++) {
-                            var el = els[i];
-                            if (el.id === '__ag_web_floating_copy_capsule') continue;
-                            try {
-                                el.style.setProperty('display', 'none', 'important');
-                                el.style.setProperty('visibility', 'hidden', 'important');
-                                el.style.setProperty('pointer-events', 'none', 'important');
-                            } catch(err) {}
-                            var p = el;
-                            while (p && p.parentElement && p.parentElement !== targetDoc.body && p.parentElement !== targetDoc.documentElement) {
-                                if (p.hasAttribute && (p.hasAttribute('data-base-ui-portal') || p.hasAttribute('data-portal'))) break;
-                                if (p.className && typeof p.className === 'string' && p.className.indexOf('z-[6000]') !== -1) break;
-                                p = p.parentElement;
-                            }
-                            try {
-                                if (p && p.parentNode) {
-                                    p.parentNode.removeChild(p);
-                                } else if (el.parentNode) {
-                                    el.parentNode.removeChild(el);
-                                }
-                            } catch(err) {}
+                        if (window.AndroidBridge && window.AndroidBridge.onSelectionCleared) {
+                            window.AndroidBridge.onSelectionCleared();
                         }
                     } catch(e) {}
                 }
@@ -871,32 +505,23 @@ class MainActivity : AppCompatActivity() {
                 if (!window.__ag_selection_reporter_bound) {
                     window.__ag_selection_reporter_bound = true;
                     document.addEventListener('selectionchange', function() {
-                        removeQuotePopups(document);
                         clearTimeout(selTimer);
-                        selTimer = setTimeout(handleSelectionUpdate, 30);
-                    }, true);
-                    window.addEventListener('selectionchange', function() {
-                        removeQuotePopups(document);
-                        clearTimeout(selTimer);
-                        selTimer = setTimeout(handleSelectionUpdate, 30);
+                        selTimer = setTimeout(handleSelectionUpdate, 60);
                     }, true);
 
-                    // 只有当用户主动单指轻触屏幕任意空白区域（触发 click 且选区已折叠）时，才收起选区与胶囊
                     document.addEventListener('click', function(e) {
-                        if (e.target && (e.target.closest('#__ag_web_floating_copy_capsule') || e.target.closest('button'))) {
-                            return;
-                        }
                         setTimeout(function() {
                             var sel = window.getSelection();
                             if (!sel || sel.isCollapsed || !sel.toString().trim()) {
-                                if (window.__ag_locked_text) {
-                                    window.hideSelectionCapsule();
+                                if (window.AndroidBridge && window.AndroidBridge.onSelectionCleared) {
+                                    window.AndroidBridge.onSelectionCleared();
                                 }
                             }
-                        }, 150);
+                        }, 100);
                     }, true);
                 }
 
+                // 4. 消息“复制全文”按钮一键复制
                 function injectMessageCopyButtons(targetDoc) {
                     if (!targetDoc) return;
                     try {
@@ -947,97 +572,35 @@ class MainActivity : AppCompatActivity() {
                     } catch(e) {}
                 }
 
-                function injectStylesAndFixes(targetDoc) {
-                    if (!targetDoc) return;
-                    try {
-                        targetDoc.documentElement.lang = 'zh-CN';
-                        if (targetDoc.body) targetDoc.body.lang = 'zh-CN';
-
-                        // 每次注入都强制刷新真实会话域的 localStorage 真插头
-                        try {
-                            if (window.localStorage) {
-                                if (localStorage.getItem("customContextMenusEnabled") !== "false") {
-                                    localStorage.setItem("customContextMenusEnabled", "false");
-                                }
-                                var key = "jetski.developer.customFlagOverrides";
-                                var flags = {};
-                                try { flags = JSON.parse(localStorage.getItem(key) || "{}"); } catch(e) {}
-                                if (flags["enable-conversation-selection-quoting"] !== false || flags["enable-custom-context-menus"] !== false) {
-                                    flags["enable-conversation-selection-quoting"] = false;
-                                    flags["enable-custom-context-menus"] = false;
-                                    localStorage.setItem(key, JSON.stringify(flags));
-                                }
-                            }
-                        } catch(e) {}
-
-                        // 1. 动态借用页面现存的合法 Nonce，彻底突破 Google 生产域 CSP 限制
-                        var nonce = '';
-                        try {
-                            var nEl = targetDoc.querySelector('script[nonce], style[nonce]');
-                            if (nEl) nonce = nEl.nonce || nEl.getAttribute('nonce') || '';
-                        } catch(e) {}
-
-                        // 2. 挂载合法带有 Nonce 的 <style> 标签
-                        var styleId = '__ag_precision_selection_style';
-                        var styleEl = targetDoc.getElementById(styleId);
-                        if (!styleEl) {
-                            styleEl = targetDoc.createElement('style');
-                            styleEl.id = styleId;
-                            styleEl.type = 'text/css';
-                            if (nonce) {
-                                styleEl.nonce = nonce;
-                                styleEl.setAttribute('nonce', nonce);
-                            }
-                            (targetDoc.head || targetDoc.documentElement).appendChild(styleEl);
-                        }
-                        if (nonce && !styleEl.nonce) {
-                            styleEl.nonce = nonce;
-                            styleEl.setAttribute('nonce', nonce);
-                        }
-                        styleEl.textContent = getSelectionCSS();
-
-                        // 3. 启用现代 Chromium 原生 adoptedStyleSheets（Constructable Stylesheets），无视标签 CSP 铁壁
-                        if (targetDoc.adoptedStyleSheets && window.CSSStyleSheet) {
-                            try {
-                                if (!targetDoc.__ag_adopted_sheet) {
-                                    targetDoc.__ag_adopted_sheet = new CSSStyleSheet();
-                                    targetDoc.__ag_adopted_sheet.replaceSync(getSelectionCSS());
-                                    targetDoc.adoptedStyleSheets = [...targetDoc.adoptedStyleSheets, targetDoc.__ag_adopted_sheet];
-                                } else {
-                                    targetDoc.__ag_adopted_sheet.replaceSync(getSelectionCSS());
-                                }
-                            } catch(e) {}
-                        }
-
-                        removeQuotePopups(targetDoc);
-                        injectMessageCopyButtons(targetDoc);
-                        window.ensureWebFloatingCapsule();
-
-                        // 强效 MutationObserver 毫秒级巡检绝杀所有 Quote 与菜单容器
-                        if (!targetDoc.__ag_observer_bound && window.MutationObserver) {
-                            targetDoc.__ag_observer_bound = true;
-                            var obs = new MutationObserver(function() {
-                                removeQuotePopups(targetDoc);
-                            });
-                            obs.observe(targetDoc.body || targetDoc.documentElement, { childList: true, subtree: true });
-                        }
-
-                        var iframes = targetDoc.querySelectorAll('iframe');
-                        for (var i = 0; i < iframes.length; i++) {
-                            try {
-                                var iframeDoc = iframes[i].contentDocument || (iframes[i].contentWindow && iframes[i].contentWindow.document);
-                                if (iframeDoc && !iframeDoc.__ag_injected) {
-                                    iframeDoc.__ag_injected = true;
-                                    injectStylesAndFixes(iframeDoc);
-                                }
-                            } catch (err) {}
-                        }
-                    } catch (e) {}
+                // 5. SPA 路由全局监听
+                if (!window.__ag_history_intercepted && window.history) {
+                    window.__ag_history_intercepted = true;
+                    var origPushState = history.pushState;
+                    var origReplaceState = history.replaceState;
+                    function onSpaRouteChange() {
+                        setTimeout(function() {
+                            injectStyles(document);
+                            injectMessageCopyButtons(document);
+                        }, 100);
+                    }
+                    history.pushState = function() {
+                        var ret = origPushState.apply(this, arguments);
+                        onSpaRouteChange();
+                        return ret;
+                    };
+                    history.replaceState = function() {
+                        var ret = origReplaceState.apply(this, arguments);
+                        onSpaRouteChange();
+                        return ret;
+                    };
+                    window.addEventListener('popstate', onSpaRouteChange);
+                    window.addEventListener('hashchange', onSpaRouteChange);
                 }
 
-                injectStylesAndFixes(document);
+                injectStyles(document);
+                injectMessageCopyButtons(document);
 
-                // 8. 精准断线重连看门狗 (彻底杜绝聊天文本与代码误判)
+                // 6. 精准断线重连看门狗 (彻底杜绝聊天文本与代码误判)
                 function findDisconnectBanner() {
                     var selectors = [
                         '[role="dialog"]',
@@ -1060,7 +623,6 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
 
-                    // 兜底：只在顶层独立浮层容器中检测，坚决不进入聊天、代码或 Markdown 区域
                     var fixedOverlays = document.querySelectorAll('body > div, body > aside');
                     for (var j = 0; j < fixedOverlays.length; j++) {
                         var overlay = fixedOverlays[j];
@@ -1105,8 +667,6 @@ class MainActivity : AppCompatActivity() {
                             });
                         }
 
-                        // 给网页自带的 WebSocket 自动重连留出 12 秒的充裕恢复时间
-                        // 超过 12 秒仍未自愈时才触发兜底 reload，彻底消灭频繁重连刷新
                         var now = Date.now();
                         if (now - window.__disconnectStartTime > 12000) {
                             if (!window.__lastAutoReloadTime || (now - window.__lastAutoReloadTime > 15000)) {
@@ -1125,33 +685,21 @@ class MainActivity : AppCompatActivity() {
                             }
                         }
                     } else {
-                        // 正常连接状态下重置断线计时
                         window.__disconnectStartTime = 0;
                     }
                 };
 
-                // 样式与 Quote 清理以 300ms 维持，断线看门狗以 1000ms 检测
-                setInterval(function() {
-                    injectStylesAndFixes(document);
-                }, 300);
-
                 setInterval(function() {
                     window.__checkAndHandleDisconnect();
                 }, 1000);
-
-                var observer = new MutationObserver(function() {
-                    injectStylesAndFixes(document);
-                });
-                if (document.body) {
-                    observer.observe(document.body, { childList: true, subtree: true });
-                }
 
                 document.addEventListener('visibilitychange', function() {
                     if (document.visibilityState === 'visible') {
                         window.dispatchEvent(new Event('online'));
                         setTimeout(function() {
                             window.__checkAndHandleDisconnect();
-                            injectStylesAndFixes(document);
+                            injectStyles(document);
+                            injectMessageCopyButtons(document);
                         }, 500);
                     }
                 });
