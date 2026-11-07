@@ -831,15 +831,16 @@ class MainActivity : AppCompatActivity() {
     private fun loadTargetPage() {
         val targetUrl = storage.serverUrl
         if (targetUrl.isNotBlank()) {
-            val uri = Uri.parse(targetUrl)
             val isNight = isNightMode()
             val hostThemeValue = if (isNight) "dark" else "light"
-            val finalUrl = if (uri.getQueryParameter("hostTheme") == null) {
-                uri.buildUpon()
-                    .appendQueryParameter("hostTheme", hostThemeValue)
-                    .appendQueryParameter("defaultThemeMode", "system")
-                    .build().toString()
-            } else {
+            val finalUrl = try {
+                if (!targetUrl.contains("hostTheme=")) {
+                    val separator = if (targetUrl.contains("?")) "&" else "?"
+                    "$targetUrl${separator}hostTheme=$hostThemeValue&defaultThemeMode=system"
+                } else {
+                    targetUrl
+                }
+            } catch (e: Exception) {
                 targetUrl
             }
             binding.webView.loadUrl(finalUrl)
