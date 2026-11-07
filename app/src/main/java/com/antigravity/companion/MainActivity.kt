@@ -33,6 +33,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import com.antigravity.companion.databinding.ActivityMainBinding
 import com.antigravity.companion.databinding.DialogSetupBinding
 import com.antigravity.companion.databinding.DialogTextSelectBinding
@@ -104,11 +106,12 @@ class MainActivity : AppCompatActivity() {
         notificationHelper = NotificationHelper(this)
 
         updateSystemBars()
+        syncThemeWithSystem()
         checkPermissions()
         initViews()
         initWebView()
 
-        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.39 已就绪", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this@MainActivity, "Antigravity 伴侣 v1.3.40 已就绪", Toast.LENGTH_SHORT).show()
 
         // 拦截物理返回键：若复制浮条可见则优先隐藏并清除选区，否则在网页内后退
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -144,12 +147,126 @@ class MainActivity : AppCompatActivity() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         updateSystemBars()
+        syncThemeWithSystem()
     }
 
+    private fun isNightMode(): Boolean {
+        return (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+    }
 
+    private fun syncThemeWithSystem() {
+        val isNight = isNightMode()
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
+                WebSettingsCompat.setForceDark(
+                    binding.webView.settings,
+                    if (isNight) WebSettingsCompat.FORCE_DARK_ON else WebSettingsCompat.FORCE_DARK_OFF
+                )
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(binding.webView.settings, isNight)
+            }
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
+                WebSettingsCompat.setForceDarkStrategy(
+                    binding.webView.settings,
+                    WebSettingsCompat.DARK_STRATEGY_WEB_THEME_DARKENING_ONLY
+                )
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        injectThemeScript(binding.webView, isNight)
+    }
+
+    private fun injectThemeScript(view: WebView?, isNight: Boolean) {
+        val js = """
+            (function() {
+                var isNight = $isNight;
+                var root = document.documentElement;
+                var body = document.body;
+                if (!root || !body) return;
+                
+                if (isNight) {
+                    root.style.colorScheme = 'dark';
+                    body.classList.remove('theme-light');
+                    body.classList.add('theme-standalone', 'dark', 'dark-theme', 'theme-dark');
+                    var vars = {
+                        '--background': '#070709',
+                        '--foreground': '#FFFFFF',
+                        '--primary': '#2F71E3',
+                        '--primary-foreground': '#FFFFFF',
+                        '--shell': '#111114',
+                        '--sidebar': '#111114',
+                        '--sidebar-secondary': 'rgb(255 255 255 / 0.09)',
+                        '--sidebar-muted': 'rgb(255 255 255 / 0.048)',
+                        '--secondary': 'rgb(255 255 255 / 0.075)',
+                        '--secondary-foreground': '#BCBDC6',
+                        '--muted': 'rgb(255 255 255 / 0.042)',
+                        '--muted-foreground': '#87888F',
+                        '--placeholder': '#636470',
+                        '--content': '#070709',
+                        '--card': '#131317',
+                        '--card-border': 'rgb(255 255 255 / 0.08)',
+                        '--border': 'rgb(255 255 255 / 0.06)',
+                        '--glass': '#131317',
+                        '--glass-border': 'rgb(255 255 255 / 0.085)',
+                        '--glass-highlight': 'rgb(255 255 255 / 0.085)',
+                        '--onyx-frame': '#0D0D11',
+                        '--onyx-well': '#111115',
+                        '--onyx-raised': '#15151A',
+                        '--onyx-selected': '#1F1F24',
+                        '--onyx-key': '#24252A'
+                    };
+                    for (var k in vars) {
+                        root.style.setProperty(k, vars[k]);
+                    }
+                    body.style.color = 'var(--foreground)';
+                    body.style.backgroundColor = 'var(--background)';
+                } else {
+                    root.style.colorScheme = 'light';
+                    body.classList.remove('dark', 'dark-theme', 'theme-dark');
+                    body.classList.add('theme-standalone', 'theme-light');
+                    var vars = {
+                        '--background': '#FFFFFF',
+                        '--foreground': '#0A0A0C',
+                        '--primary': '#2F75C3',
+                        '--primary-foreground': '#FFFFFF',
+                        '--shell': '#FAFAFA',
+                        '--sidebar': '#FAFAFA',
+                        '--sidebar-secondary': 'rgb(10 10 12 / 0.075)',
+                        '--sidebar-muted': 'rgb(10 10 12 / 0.042)',
+                        '--secondary': 'rgb(10 10 12 / 0.06)',
+                        '--secondary-foreground': '#3F3F46',
+                        '--muted': 'rgb(10 10 12 / 0.038)',
+                        '--muted-foreground': '#71717A',
+                        '--placeholder': '#8E8E95',
+                        '--content': '#FFFFFF',
+                        '--card': '#FFFFFF',
+                        '--card-border': 'rgb(10 10 12 / 0.07)',
+                        '--border': 'rgb(10 10 12 / 0.06)',
+                        '--glass': '#FFFFFF',
+                        '--glass-border': 'rgb(10 10 12 / 0.075)',
+                        '--glass-highlight': 'rgb(10 10 12 / 0.075)',
+                        '--onyx-frame': '#F9F9F9',
+                        '--onyx-well': 'rgb(10 10 12 / 0.055)',
+                        '--onyx-raised': '#FFFFFF',
+                        '--onyx-selected': '#FFFFFF',
+                        '--onyx-key': '#FFFFFF'
+                    };
+                    for (var k in vars) {
+                        root.style.setProperty(k, vars[k]);
+                    }
+                    body.style.color = 'var(--foreground)';
+                    body.style.backgroundColor = 'var(--background)';
+                }
+            })();
+        """.trimIndent()
+        view?.evaluateJavascript(js, null)
+    }
 
     private fun updateSystemBars() {
-        val isNightMode = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val isNightMode = isNightMode()
         val statusBarBg = ContextCompat.getColor(this, R.color.status_bar_color)
         val navBarBg = ContextCompat.getColor(this, R.color.surface)
 
@@ -240,6 +357,8 @@ class MainActivity : AppCompatActivity() {
             userAgentString = settings.userAgentString + " AntigravityCompanion/1.3"
         }
 
+        syncThemeWithSystem()
+
         // 保持 0（默认 1:1 视口比例），消除超高分屏下的坐标缩放偏移
         webView.setInitialScale(0)
 
@@ -293,8 +412,10 @@ class MainActivity : AppCompatActivity() {
 
                 if (!hasShownConnectToast) {
                     hasShownConnectToast = true
-                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.39", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接！Antigravity 伴侣 v1.3.40", Toast.LENGTH_SHORT).show()
                 }
+
+                syncThemeWithSystem()
 
                 // 页面加载完成后注入监听脚本：支持切回前台自动触发唤醒
                 injectKeepAliveAndNotificationScript(view)
@@ -708,10 +829,20 @@ class MainActivity : AppCompatActivity() {
         view?.evaluateJavascript(js, null)
     }
     private fun loadTargetPage() {
-        // 始终加载主页地址（图2主页面），不再停留在历史对话详情页
         val targetUrl = storage.serverUrl
         if (targetUrl.isNotBlank()) {
-            binding.webView.loadUrl(targetUrl)
+            val uri = Uri.parse(targetUrl)
+            val isNight = isNightMode()
+            val hostThemeValue = if (isNight) "dark" else "light"
+            val finalUrl = if (uri.getQueryParameter("hostTheme") == null) {
+                uri.buildUpon()
+                    .appendQueryParameter("hostTheme", hostThemeValue)
+                    .appendQueryParameter("defaultThemeMode", "system")
+                    .build().toString()
+            } else {
+                targetUrl
+            }
+            binding.webView.loadUrl(finalUrl)
         }
     }
 
@@ -785,6 +916,7 @@ class MainActivity : AppCompatActivity() {
         binding.webView.onResume()
         binding.webView.setNetworkAvailable(true)
         updateSystemBars()
+        syncThemeWithSystem()
         // 切回前台时，主动通知 WebView 唤醒并执行重连/刷新检查
         binding.webView.evaluateJavascript(
             """

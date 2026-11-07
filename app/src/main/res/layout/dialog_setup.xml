@@ -77,7 +77,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
         android:gravity="center"
-        android:text="Antigravity 伴侣 v1.3.39 (Build 44)"
+        android:text="Antigravity 伴侣 v1.3.40 (Build 45)"
         android:textColor="@color/text_secondary"
         android:textSize="12sp" />
 
